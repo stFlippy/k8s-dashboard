@@ -1,0 +1,71 @@
+.overlay {
+  position: fixed;
+  inset: var(--topbar-height) 0 0;
+  background: rgba(2, 6, 23, 0.72);
+  backdrop-filter: blur(4px);
+  z-index: 800;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 28px 16px;
+}
+.modal {
+  width: min(520px, 100%);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+.header, .footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.header h3 { margin: 0; font-size: 19px; }
+.body { padding: 18px; display: grid; gap: 16px; }
+.body p { margin: 0; color: var(--text-secondary); line-height: 1.5; }
+.mathCard {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  background: var(--bg-input);
+  padding: 16px;
+}
+.mathCard span { color: var(--text-secondary); font-size: 14px; }
+.mathCard strong { font-size: 26px; color: var(--text-primary); }
+.mathCard input {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-canvas);
+  color: var(--text-primary);
+  padding: 10px 12px;
+  outline: none;
+}
+.mathCard input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(59,130,246,.18); }
+.error {
+  border: 1px solid rgba(239, 68, 68, 0.38);
+  border-radius: var(--radius);
+  background: rgba(239, 68, 68, 0.08);
+  color: #fecaca;
+  padding: 10px 12px;
+}
+.footer { justify-content: flex-end; }
+.footer button, .header button {
+  padding: 8px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.primary {
+  border-color: var(--accent) !important;
+  background: var(--accent) !important;
+  color: #fff !important;
+}
+.footer button:disabled, .header button:disabled { opacity: .55; cursor: not-allowed; }

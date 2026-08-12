@@ -1,0 +1,70 @@
+.overlay { position: fixed; inset: var(--topbar-height) 0 0; background: rgba(0,0,0,.58); z-index: 690; }
+.panel { position: fixed; top: var(--topbar-height); right: 0; bottom: 0; width: min(620px, 96vw); background: var(--bg-canvas); border-left: 1px solid var(--border-color); box-shadow: var(--shadow-lg); z-index: 700; display: flex; flex-direction: column; }
+.header { flex: 0 0 auto; padding: 18px 20px; display: flex; align-items: center; justify-content: space-between; background: var(--bg-card); border-bottom: 1px solid var(--border-color); }
+.header h2 { margin: 0; font-size: 19px; font-weight: 600; }
+.header p { margin: 4px 0 0; color: var(--text-secondary); font-size: 13px; }
+.close { border: 1px solid var(--border-color); border-radius: var(--radius); background: var(--control-bg); color: var(--text-secondary); cursor: pointer; padding: 8px 12px; }
+.close:hover { background: var(--bg-hover); color: var(--text-primary); }
+.body { flex: 1; overflow: auto; padding: 18px 20px 28px; }
+.warning, .message, .error, .state { padding: 10px 12px; border: 1px solid var(--border-color); border-radius: var(--radius); margin-bottom: 14px; background: var(--bg-card); font-size: 13px; line-height: 1.5; }
+.warning { color: #fbbf24; border-color: rgba(245,158,11,.4); background: rgba(245,158,11,.08); }
+.error { color: var(--error); }
+.message { position: sticky; bottom: 0; color: var(--text-primary); box-shadow: 0 -4px 14px rgba(0,0,0,.25); }
+.sectionHeader { display: flex; align-items: center; justify-content: space-between; margin: 4px 0 12px; }
+.sectionHeader h3 { margin: 0; font-size: 15px; }
+.primary { border-color: var(--accent) !important; background: var(--accent) !important; color: #fff !important; }
+.primary:hover { background: var(--accent-hover) !important; }
+.clusterList { display: flex; flex-direction: column; gap: 10px; }
+.clusterCard, .formCard { border: 1px solid var(--border-color); border-radius: var(--radius-lg); background: var(--bg-input); padding: 13px; }
+.clusterTop { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.clusterName { font-weight: 600; font-size: 15px; }
+.clusterMeta { margin-top: 3px; color: var(--text-muted); font-size: 13px; }
+.statusDot { width: 9px; height: 9px; border-radius: 50%; background: var(--text-muted); margin-top: 4px; }
+.statusDot.enabled { background: var(--success); box-shadow: 0 0 7px rgba(16,185,129,.55); }
+.details { display: grid; grid-template-columns: 88px minmax(0,1fr); gap: 4px 10px; margin: 10px 0 0; font-size: 13px; }
+.details dt { color: var(--text-muted); }
+.details dd { margin: 0; min-width: 0; overflow-wrap: anywhere; color: var(--text-secondary); font-family: Roboto Mono, monospace; }
+.secret { letter-spacing: 1px; }
+.actions, .formActions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 12px; }
+.actions button, .formActions button, .sectionHeader button { padding: 6px 10px; border: 1px solid var(--border-color); border-radius: var(--radius); background: var(--control-bg); color: var(--text-primary); cursor: pointer; font-size: 13px; }
+.actions button:hover, .formActions button:hover, .sectionHeader button:hover { background: var(--bg-hover); }
+.actions .danger { color: var(--error); border-color: rgba(239,68,68,.35); }
+.formCard { margin-top: 14px; display: grid; grid-template-columns: 1fr 1fr; gap: 11px 12px; }
+.formTitle { grid-column: 1 / -1; font-size: 15px; font-weight: 600; margin-bottom: 2px; }
+.formCard label { display: flex; flex-direction: column; gap: 5px; color: var(--text-secondary); font-size: 13px; }
+.formCard input, .formCard select, .formCard textarea { width: 100%; border: 1px solid var(--border-color); border-radius: var(--radius); background: var(--control-input); color: var(--text-primary); padding: 8px 9px; outline: none; font-size: 13px; }
+.formCard input:focus, .formCard select:focus, .formCard textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(59,130,246,.14); }
+.formCard textarea { min-height: 92px; resize: vertical; font-family: Roboto Mono, monospace; }
+.formCard .check { grid-column: 1 / -1; flex-direction: row; align-items: center; gap: 7px; }
+.check input { width: auto; }
+.formActions { grid-column: 1 / -1; }
+.formActions button:disabled { opacity: .45; cursor: not-allowed; }
+.securityNote{margin:0 0 14px;padding:9px 11px;border-left:3px solid var(--info);background:rgba(96,165,250,.07);color:var(--text-secondary);font-size:13px;line-height:1.45}.insecure{color:var(--warning)!important}
+.labelText { position: relative; display: inline-flex; align-items: center; width: max-content; max-width: 100%; }
+.labelText::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  min-width: 240px;
+  max-width: 320px;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  background: rgba(15, 23, 42, 0.98);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  box-shadow: var(--shadow-lg);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
+  transition: opacity .18s ease, transform .18s ease;
+  transition-delay: 2.1s;
+  z-index: 20;
+  white-space: normal;
+}
+.formCard label:hover .labelText::after {
+  opacity: 1;
+  transform: translateY(0);
+}
+.formCard label:hover .labelText { color: var(--text-primary); }
+@media (max-width: 580px) { .formCard { grid-template-columns: 1fr; } .formTitle, .formCard .check, .formActions { grid-column: 1; } }
