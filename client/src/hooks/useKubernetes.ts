@@ -9,6 +9,7 @@ import {
   getPods,
   getResourceQuotas,
   testCluster,
+  testClusterInput,
   updateCluster
 } from '../api/kubernetes';
 import type { ClusterInput } from '../types/kubernetes';
@@ -84,5 +85,6 @@ export function useClusterMutations() {
     update: useMutation({ mutationFn: ({ id, input }: { id: string; input: ClusterInput }) => updateCluster(id, input), onSuccess: invalidate }),
     remove: useMutation({ mutationFn: (id: string) => deleteCluster(id), onSuccess: invalidate }),
     test: useMutation({ mutationFn: (id: string) => testCluster(id) })
+    ,testInput: useMutation({ mutationFn: ({ input, existingId }: { input: ClusterInput; existingId?: string }) => testClusterInput(input, existingId) })
   };
 }

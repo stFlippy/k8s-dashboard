@@ -53,6 +53,8 @@ export function QuotasPage() {
   if (clustersError) return <div className={styles.error}>{clustersError.message}</div>;
 
   const hasQuotas = sections.some((section) => section.namespaces.some((namespace) => namespace.quotas.length > 0));
+  const quotaErrors = sections.flatMap((section) => section.namespaces.filter((namespace) => namespace.error).map((namespace) => `${section.cluster.name}/${namespace.namespace}: ${namespace.error?.message}`));
+  const quotasLoading = quotaQueries.some((query) => query.isLoading);
 
   return (
     <section className={styles.root}>
@@ -60,6 +62,7 @@ export function QuotasPage() {
         <div><h2>Квоты ресурсов</h2><p>Администрирование → квоты ресурсов</p></div>
       </div>
       <div className={styles.content}>
+        {quotaErrors.length > 0 && <div className={styles.error}>Не удалось прочитать часть ResourceQuota: {quotaErrors.join(' · ')}</div>}
         {sections.map((section, clusterIndex) => (
           <div className={styles.clusterSection} key={section.cluster.id}>
             <div className={`${styles.clusterTitle} ${styles[`tone${clusterIndex % 4}`]}`}>
@@ -94,7 +97,8 @@ export function QuotasPage() {
             }))}
           </div>
         ))}
-        {!hasQuotas && <div className={styles.empty}>В подключённых namespace объекты ResourceQuota не найдены.</div>}
+        {!hasQuotas && quotasLoading && <div className={styles.empty}>Поиск ResourceQuota во всех namespace…</div>}
+        {!hasQuotas && !quotasLoading && !quotaErrors.length && <div className={styles.empty}>В подключённых namespace объекты ResourceQuota не найдены. Эта страница показывает только созданные Kubernetes-объекты ResourceQuota, а не общую ёмкость нод.</div>}
       </div>
     </section>
   );

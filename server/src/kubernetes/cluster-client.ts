@@ -7,14 +7,15 @@ function normalizeCaData(value: string | undefined): string | undefined {
   return value.replace(/\s+/g, '');
 }
 
-export function getClusterKubeConfig(clusterId: string): k8s.KubeConfig {
-  const cluster = getResolvedCluster(clusterId);
+export function getKubeConfigForCluster(cluster: import('../clusters/types.ts').ResolvedCluster): k8s.KubeConfig {
   const kc = new k8s.KubeConfig();
 
   if (cluster.authType === 'kubeconfig') {
     const source = new k8s.KubeConfig();
-    if (cluster.kubeconfigPath) source.loadFromFile(cluster.kubeconfigPath);
-    else source.loadFromDefault();
+    const kubeconfig = getDecryptedCredentials(cluster).kubeconfig;
+    if (kubeconfig) source.loadFromString(kubeconfig);
+    else if (cluster.kubeconfigPath) source.loadFromFile(cluster.kubeconfigPath);
+    else throw new Error(`Kubeconfig is not configured for '${cluster.name}'.`);
     if (cluster.context) source.setCurrentContext(cluster.context);
 
     // Isolate cluster/user names per dashboard entry. The client library caches
@@ -59,6 +60,8 @@ export function getClusterKubeConfig(clusterId: string): k8s.KubeConfig {
   });
   return kc;
 }
+
+export function getClusterKubeConfig(clusterId: string): k8s.KubeConfig { return getKubeConfigForCluster(getResolvedCluster(clusterId)); }
 
 export function getClusterClients(clusterId: string) {
   const kubeConfig = getClusterKubeConfig(clusterId);

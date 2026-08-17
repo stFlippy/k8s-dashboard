@@ -3,13 +3,13 @@
 .header { flex: 0 0 auto; padding: 18px 20px; display: flex; align-items: center; justify-content: space-between; background: var(--bg-card); border-bottom: 1px solid var(--border-color); }
 .header h2 { margin: 0; font-size: 19px; font-weight: 600; }
 .header p { margin: 4px 0 0; color: var(--text-secondary); font-size: 13px; }
-.close { border: 1px solid var(--border-color); border-radius: var(--radius); background: var(--control-bg); color: var(--text-secondary); cursor: pointer; padding: 8px 12px; }
-.close:hover { background: var(--bg-hover); color: var(--text-primary); }
+.close{display:grid;place-items:center;width:38px;height:38px;padding:0;border:0;border-radius:9px;background:transparent;color:var(--text-primary);cursor:pointer;font-size:29px;line-height:1}.close:hover{background:transparent;color:var(--error)}
 .body { flex: 1; overflow: auto; padding: 18px 20px 28px; }
 .warning, .message, .error, .state { padding: 10px 12px; border: 1px solid var(--border-color); border-radius: var(--radius); margin-bottom: 14px; background: var(--bg-card); font-size: 13px; line-height: 1.5; }
 .warning { color: #fbbf24; border-color: rgba(245,158,11,.4); background: rgba(245,158,11,.08); }
 .error { color: var(--error); }
-.message { position: sticky; bottom: 0; color: var(--text-primary); box-shadow: 0 -4px 14px rgba(0,0,0,.25); }
+.message { position: sticky; bottom: 0; display:flex; align-items:flex-start; justify-content:space-between; gap:10px; max-height:132px; overflow:auto; color: var(--text-primary); box-shadow: 0 -4px 14px rgba(0,0,0,.25); overflow-wrap:anywhere; }
+.message span{min-width:0}.messageClose{position:sticky;top:0;flex:0 0 26px;width:26px;height:26px;padding:0;border:0;background:transparent;color:var(--text-primary);font-size:23px;line-height:1;cursor:pointer}.messageClose:hover{color:var(--error)}
 .sectionHeader { display: flex; align-items: center; justify-content: space-between; margin: 4px 0 12px; }
 .sectionHeader h3 { margin: 0; font-size: 15px; }
 .primary { border-color: var(--accent) !important; background: var(--accent) !important; color: #fff !important; }
@@ -24,6 +24,7 @@
 .details { display: grid; grid-template-columns: 88px minmax(0,1fr); gap: 4px 10px; margin: 10px 0 0; font-size: 13px; }
 .details dt { color: var(--text-muted); }
 .details dd { margin: 0; min-width: 0; overflow-wrap: anywhere; color: var(--text-secondary); font-family: Roboto Mono, monospace; }
+.aliasEditor{display:flex;gap:6px}.aliasEditor input{box-sizing:border-box;width:78px;min-width:0;padding:3px 6px;border:1px solid var(--border-color);border-radius:5px;background:var(--control-input);color:var(--text-primary);text-transform:uppercase}.aliasEditor button{padding:2px 8px;border:1px solid var(--border-color);border-radius:5px;background:var(--control-bg);color:var(--text-primary);cursor:pointer}
 .secret { letter-spacing: 1px; }
 .actions, .formActions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 12px; }
 .actions button, .formActions button, .sectionHeader button { padding: 6px 10px; border: 1px solid var(--border-color); border-radius: var(--radius); background: var(--control-bg); color: var(--text-primary); cursor: pointer; font-size: 13px; }
@@ -38,8 +39,12 @@
 .formCard .check { grid-column: 1 / -1; flex-direction: row; align-items: center; gap: 7px; }
 .check input { width: auto; }
 .formActions { grid-column: 1 / -1; }
+.kubeconfigSource,.filePicker,.kubeconfigEditor{grid-column:1/-1}.kubeconfigSource{display:flex;align-items:center;justify-content:space-between;gap:12px;color:var(--text-secondary)}.kubeconfigSource>div{display:flex;gap:3px;padding:2px;border:1px solid var(--border-color);border-radius:var(--radius);background:var(--bg-card)}.kubeconfigSource button,.filePicker button{padding:6px 10px;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--text-secondary);cursor:pointer}.kubeconfigSource button{padding:3px 7px;font-size:12px;line-height:18px}.kubeconfigSource button:hover,.filePicker button:hover{border-color:var(--control-border);color:var(--text-primary)}.kubeconfigSource .sourceActive{border-color:var(--accent);background:var(--control-bg);color:var(--text-primary)}.filePicker{min-height:44px;display:flex;align-items:center;gap:8px;padding:6px 9px;border:1px dashed var(--control-border);border-radius:var(--radius);background:var(--bg-card)}.filePicker button{flex:0 0 auto;padding:3px 7px;border-style:solid;border-color:var(--control-border);background:var(--control-bg);color:var(--text-primary);font-size:12px;line-height:18px}.filePicker span{min-width:0;color:var(--text-muted);font-size:12px;overflow-wrap:anywhere}.kubeconfigEditor textarea{min-height:260px!important;resize:vertical;font:13px/1.5 'Roboto Mono',Roboto,monospace}
 .formActions button:disabled { opacity: .45; cursor: not-allowed; }
 .securityNote{margin:0 0 14px;padding:9px 11px;border-left:3px solid var(--info);background:rgba(96,165,250,.07);color:var(--text-secondary);font-size:13px;line-height:1.45}.insecure{color:var(--warning)!important}
+.themeSwitch{margin:0 0 16px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between;gap:12px;border:1px solid var(--border-color);border-radius:var(--radius);background:var(--bg-card);cursor:pointer}.themeSwitch span{display:flex;flex-direction:column;gap:3px}.themeSwitch b{color:var(--text-primary)}.themeSwitch small{color:var(--text-muted)}.themeSwitch input{width:17px;height:17px;accent-color:var(--accent)}
+.themeSwitch input{appearance:none;width:38px;height:21px;padding:2px;border:1px solid var(--border-color);border-radius:999px;background:var(--bg-input);transition:background var(--transition)}.themeSwitch input::after{content:'';display:block;width:15px;height:15px;border-radius:50%;background:var(--text-muted);transition:transform var(--transition),background var(--transition)}.themeSwitch input:checked{background:var(--accent);border-color:var(--accent)}.themeSwitch input:checked::after{transform:translateX(17px);background:#fff}
+.settingsTabs{display:flex;padding:0 20px;border-bottom:1px solid var(--border-color);background:var(--bg-card)}.settingsTabs button{padding:10px 13px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--text-secondary);cursor:pointer}.settingsTabs button:hover{color:var(--text-primary)}.settingsTabs .active{color:var(--accent);border-bottom-color:var(--accent)}.passwordCard{padding:13px;display:grid;gap:10px;border:1px solid var(--border-color);border-radius:var(--radius-lg);background:var(--bg-input)}.passwordCard h3{margin:0}.passwordCard label{display:grid;gap:5px;color:var(--text-secondary)}.passwordCard input{height:36px;padding:0 9px;border:1px solid var(--border-color);background:var(--control-input);color:var(--text-primary)}.passwordCard button{justify-self:end;padding:7px 11px;border:1px solid var(--accent);border-radius:var(--radius);cursor:pointer}.passwordCard button:disabled{opacity:.4;cursor:not-allowed}
 .labelText { position: relative; display: inline-flex; align-items: center; width: max-content; max-width: 100%; }
 .labelText::after {
   content: attr(data-tooltip);

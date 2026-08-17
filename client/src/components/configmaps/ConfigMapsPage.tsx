@@ -1,13 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useQueries } from '@tanstack/react-query';
+import { useMutation, useQueries, useQueryClient } from '@tanstack/react-query';
 import type { UseQueryResult } from '@tanstack/react-query';
-import { getConfigMaps } from '../../api/kubernetes';
+import { getConfigMaps, replaceConfigMap } from '../../api/kubernetes';
 import { useClusterNamespaces } from '../../hooks/useClusterNamespaces';
 import type { ConfigMap } from '../../types/kubernetes';
 import { formatDate } from '../../utils/formatDate';
+import { ActionConfirmModal } from '../common/ActionConfirmModal';
+import type { ActionConfirmRequest } from '../common/ActionConfirmModal';
 import styles from './ConfigMapsPage.module.css';
+import { CodeEditor } from '../common/CodeEditor';
 
-interface Selected { clusterName: string; configMap: ConfigMap; }
+interface Selected { clusterId: string; clusterName: string; configMap: ConfigMap; }
 type OpenFilter = 'clusters' | 'namespaces' | null;
 
 const clusterStorageKey = 'quaber.configmaps.selectedClusters';
@@ -24,30 +27,14 @@ function readStoredList(key: string): string[] | null {
   }
 }
 
-function yamlScalar(value: string): string {
-  if (value.includes('\n')) return `|\n${value.split('\n').map((line) => `    ${line}`).join('\n')}`;
-  return JSON.stringify(value);
-}
-
-function toYaml(configMap: ConfigMap): string {
-  const lines = ['apiVersion: v1', 'kind: ConfigMap', 'metadata:', `  name: ${configMap.name}`, `  namespace: ${configMap.namespace}`, 'data:'];
-  const entries = Object.entries(configMap.data);
-  if (!entries.length) lines.push('  {}');
-  for (const [key, value] of entries) {
-    if (value.includes('\n')) {
-      lines.push(`  ${key}: |`);
-      lines.push(...value.split('\n').map((line) => `    ${line}`));
-    } else {
-      lines.push(`  ${key}: ${yamlScalar(value)}`);
-    }
-  }
-  return lines.join('\n');
-}
-
 export function ConfigMapsPage() {
+  const queryClient = useQueryClient();
   const { clustersLoading, clustersError, groups } = useClusterNamespaces();
   const filterAreaRef = useRef<HTMLDivElement | null>(null);
   const [selected, setSelected] = useState<Selected | null>(null);
+  const [resourceText, setResourceText] = useState('');
+  const [message, setMessage] = useState('');
+  const [confirmRequest, setConfirmRequest] = useState<ActionConfirmRequest | null>(null);
   const [openFilter, setOpenFilter] = useState<OpenFilter>(null);
   const clusterNames = useMemo(() => groups.map((group) => group.cluster.name), [groups]);
   const namespaceNames = useMemo(() => [...new Set(groups.flatMap((group) => group.namespaces.map((namespace) => namespace.name)))].sort(), [groups]);
@@ -102,6 +89,27 @@ export function ConfigMapsPage() {
     const source = current ?? namespaceNames;
     return source.includes(value) ? source.filter((item) => item !== value) : [...source, value];
   });
+  const replace = useMutation({
+    mutationFn: async () => {
+      if (!selected) throw new Error('ConfigMap не выбран.');
+      let resource: unknown;
+      try { resource = JSON.parse(resourceText); } catch { throw new Error('Редактор использует JSON-синтаксис. Не удалось распознать JSON.'); }
+      return replaceConfigMap(selected.clusterId, selected.configMap.namespace, selected.configMap.name, resource);
+    },
+    onSuccess: async (updated) => {
+      if (!selected) return;
+      setSelected({ ...selected, configMap: updated });
+      setResourceText(JSON.stringify(updated.resource, null, 2));
+      setMessage('ConfigMap сохранён.');
+      await queryClient.invalidateQueries({ queryKey: ['configmaps', selected.clusterId, selected.configMap.namespace] });
+    }
+  });
+
+  const openConfigMap = (clusterId: string, clusterName: string, configMap: ConfigMap) => {
+    setSelected({ clusterId, clusterName, configMap });
+    setResourceText(JSON.stringify(configMap.resource, null, 2));
+    setMessage('');
+  };
 
   if (clustersLoading) return <div className={styles.state}>Загрузка кластеров…</div>;
   if (clustersError) return <div className={styles.error}>{clustersError.message}</div>;
@@ -124,12 +132,13 @@ export function ConfigMapsPage() {
       <div className={styles.content} onMouseDown={() => setOpenFilter(null)}>
         <table className={styles.table}>
           <thead><tr><th>Кластер</th><th>Имя</th><th>Namespace</th><th>Создан</th></tr></thead>
-          <tbody>{rows.map(({ target, configMap }) => <tr key={`${target.clusterId}/${configMap.namespace}/${configMap.name}`} onClick={() => setSelected({ clusterName: target.clusterName, configMap })}><td><span className={`${styles.clusterBadge} ${styles[`tone${groups.findIndex((group) => group.cluster.id === target.clusterId) % 4}`]}`}>{target.clusterName}</span></td><td className={styles.name}>{configMap.name}</td><td>{configMap.namespace}</td><td>{formatDate(configMap.creationTimestamp)}</td></tr>)}</tbody>
+          <tbody>{rows.map(({ target, configMap }) => <tr key={`${target.clusterId}/${configMap.namespace}/${configMap.name}`} onClick={() => openConfigMap(target.clusterId, target.clusterName, configMap)}><td><span className={`${styles.clusterBadge} ${styles[`tone${groups.findIndex((group) => group.cluster.id === target.clusterId) % 4}`]}`}>{target.clusterName}</span></td><td className={styles.name}>{configMap.name}</td><td>{configMap.namespace}</td><td>{formatDate(configMap.creationTimestamp)}</td></tr>)}</tbody>
         </table>
         {!rows.length && <div className={styles.empty}>Подходящие ConfigMaps не найдены.</div>}
       </div>
 
-      {selected && <div className={styles.modalOverlay} onMouseDown={(event) => event.target === event.currentTarget && setSelected(null)}><div className={styles.detail}><div className={styles.detailHeader}><div><h3>{selected.configMap.name}</h3><span>{selected.clusterName} / {selected.configMap.namespace}</span></div><button onClick={() => setSelected(null)}>Закрыть</button></div><h4>Содержимое</h4><table className={styles.dataTable}><thead><tr><th>Ключ</th><th>Значение</th></tr></thead><tbody>{Object.entries(selected.configMap.data).map(([key, value]) => <tr key={key}><td>{key}</td><td><pre>{value}</pre></td></tr>)}</tbody></table><h4>YAML</h4><pre className={styles.yaml}>{toYaml(selected.configMap)}</pre></div></div>}
+      {selected && <div className={styles.modalOverlay} onMouseDown={(event) => event.target === event.currentTarget && setSelected(null)}><div className={styles.detail} style={{ width: 'min(1320px, calc(100vw - 32px))', height: 'calc(100vh - var(--topbar-height) - 24px)', maxHeight: 'none', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}><div className={styles.detailHeader}><div><h3>{selected.configMap.name}</h3><span>{selected.clusterName} / {selected.configMap.namespace}</span></div><div><button onClick={() => setConfirmRequest({ title: 'Сохранение ConfigMap', description: `Изменения ConfigMap ${selected.configMap.name} будут отправлены в кластер ${selected.clusterName}.`, confirmLabel: 'Сохранить ConfigMap', onConfirm: async () => { await replace.mutateAsync(); } })}>Сохранить</button><button className={styles.close} onClick={() => setSelected(null)} aria-label="Закрыть" title="Закрыть">×</button></div></div>{message && <div className={styles.message}>{message}</div>}<div style={{ display: 'flex', flex: 1, minHeight: 0, margin: 16 }}><CodeEditor value={resourceText} onChange={(value) => { setResourceText(value); setMessage(''); }} /></div></div></div>}
+      <ActionConfirmModal request={confirmRequest} onClose={() => setConfirmRequest(null)} />
     </section>
   );
 }

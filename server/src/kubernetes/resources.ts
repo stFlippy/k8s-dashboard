@@ -35,6 +35,15 @@ interface EventListSource {
   items: k8s.CoreV1Event[];
 }
 
+function execFailureMessage(status: unknown): string | null {
+  if (!status || typeof status !== 'object') return null;
+  const result = status as { status?: unknown; message?: unknown; reason?: unknown };
+  if (result.status !== 'Failure') return null;
+  if (typeof result.message === 'string' && result.message.trim()) return result.message;
+  if (typeof result.reason === 'string' && result.reason.trim()) return result.reason;
+  return 'Kubernetes rejected the Exec command.';
+}
+
 function iso(value: Date | string | undefined | null): string | null {
   if (!value) return null;
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
@@ -61,10 +70,6 @@ function quantity(value: unknown): string | null {
 function podStatus(pod: k8s.V1Pod): PodDetailDto['status'] {
   const phase = pod.status?.phase;
   if (phase === 'Failed') return 'Failed';
-  const containerStatuses = pod.status?.containerStatuses ?? [];
-  const allContainersTerminated = containerStatuses.length > 0
-    && containerStatuses.every((status: k8s.V1ContainerStatus) => Boolean(status.state?.terminated));
-  if (phase === 'Succeeded' || allContainersTerminated) return 'Terminated';
   if (phase === 'Running') return 'Running';
   if (phase === 'Pending') return 'Pending';
   return 'Unknown';
@@ -212,6 +217,7 @@ export async function getPodDetail(clusterId: string, namespace: string, name: s
     ip: pod.status?.podIP ?? null,
     host: pod.spec?.nodeName ?? null,
     lastRestartAt: podLastRestartAt(pod.status?.containerStatuses),
+    terminating: Boolean(pod.metadata?.deletionTimestamp),
     qosClass: pod.status?.qosClass ?? null,
     serviceAccount: pod.spec?.serviceAccountName ?? null,
     containers,
@@ -269,6 +275,7 @@ export async function getPodLogs(
 export async function execPod(clusterId: string, namespace: string, name: string, input: ExecInputDto): Promise<ExecResultDto> {
   const command = input.command.trim();
   if (!command) throw new Error('Command is required.');
+  if (command.length > 8_192) throw new Error('Command is too long.');
   const detail = await getPodDetail(clusterId, namespace, name);
   const container = input.container || detail.containers[0]?.name;
   if (!container) throw new Error('Pod has no containers.');
@@ -336,6 +343,8 @@ export async function execPod(clusterId: string, namespace: string, name: string
     });
   });
   await Promise.all([stdoutFinished, stderrFinished]);
+  const failureMessage = execFailureMessage(status);
+  if (failureMessage) throw new Error(failureMessage);
 
   return {
     stdout: Buffer.concat(stdoutChunks).toString('utf8'),

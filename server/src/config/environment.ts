@@ -33,4 +33,6 @@ export const environment = {
   kubeContext: process.env.KUBE_CONTEXT || undefined,
   masterKey: process.env.DASHBOARD_MASTER_KEY || undefined,
   clusterStorePath: process.env.CLUSTER_STORE_PATH || resolve(process.cwd(), 'data/clusters.json')
+  ,userDatabasePath: process.env.USER_DATABASE_PATH || resolve(process.cwd(), 'data/users.sqlite')
+  ,bootstrapUserPath: process.env.BOOTSTRAP_USER_PATH || resolve(process.cwd(), 'data/bootstrap-user.json')
 };

@@ -3,14 +3,10 @@ import { getClusterClients } from './cluster-client.ts';
 import type { PodDto } from '../types/api.ts';
 
 function normalizePodStatus(pod: k8s.V1Pod): PodDto['status'] {
+  if (pod.metadata?.deletionTimestamp) return 'Failed';
   const phase = pod.status?.phase;
   if (phase === 'Failed') return 'Failed';
 
-  const containerStatuses = pod.status?.containerStatuses ?? [];
-  const allContainersTerminated = containerStatuses.length > 0
-    && containerStatuses.every((container: k8s.V1ContainerStatus) => Boolean(container.state?.terminated));
-
-  if (phase === 'Succeeded' || allContainersTerminated) return 'Terminated';
   if (phase === 'Running') return 'Running';
   if (phase === 'Pending') return 'Pending';
   return 'Unknown';
@@ -49,6 +45,7 @@ export async function listPods(clusterId: string, namespace: string): Promise<Po
     ) ?? 0,
     ip: item.status?.podIP ?? null,
     host: item.spec?.nodeName ?? null,
-    lastRestartAt: lastRestartAt(item.status?.containerStatuses)
+    lastRestartAt: lastRestartAt(item.status?.containerStatuses),
+    terminating: Boolean(item.metadata?.deletionTimestamp)
   }));
 }

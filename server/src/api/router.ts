@@ -4,8 +4,8 @@ import { listNamespaces } from '../kubernetes/namespaces.ts';
 import { listDeployments } from '../kubernetes/deployments.ts';
 import { listPods } from '../kubernetes/pods.ts';
 import { listResourceQuotas } from '../kubernetes/quotas.ts';
-import { listConfigMaps } from '../kubernetes/configmaps.ts';
-import { testCluster } from '../kubernetes/test-cluster.ts';
+import { listConfigMaps, replaceConfigMap } from '../kubernetes/configmaps.ts';
+import { testCluster, testClusterInput } from '../kubernetes/test-cluster.ts';
 import {
   deleteDeployment,
   deletePod,
@@ -23,6 +23,8 @@ import {
   updateDeploymentResources
 } from '../kubernetes/resources.ts';
 import type { ClusterInputDto, DeploymentResourcesInputDto, ExecInputDto } from '../types/api.ts';
+import { getClusterHealth } from '../kubernetes/cluster-health.ts';
+import { currentUser } from '../auth/request-context.ts';
 
 function sendJson(response: ServerResponse, status: number, data: unknown): void {
   const body = JSON.stringify(data);
@@ -37,11 +39,27 @@ function sendText(response: ServerResponse, status: number, data: string): void 
   response.end(data);
 }
 
+export function safeErrorMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : typeof error === 'string' ? error : 'Unknown server error';
+  const httpCode = raw.match(/HTTP-Code:\s*(\d{3})/i)?.[1] ?? raw.match(/\bHTTP\s+(\d{3})\b/i)?.[1];
+  const containsHtml = /<(?:!doctype|html|head|body|meta|script|style)\b/i.test(raw);
+  if (containsHtml) {
+    return httpCode
+      ? `Kubernetes API вернул HTTP ${httpCode}. Проверьте адрес API-сервера и параметры подключения.`
+      : 'Kubernetes API вернул HTML вместо данных. Проверьте адрес API-сервера и параметры подключения.';
+  }
+
+  const compact = raw.replace(/\s+/g, ' ').trim();
+  return compact.length > 500 ? `${compact.slice(0, 497)}…` : compact;
+}
+
 function sendError(response: ServerResponse, error: unknown, status = 500): void {
-  const message = error instanceof Error ? error.message : 'Unknown server error';
+  const message = safeErrorMessage(error);
   // Do not dump arbitrary Kubernetes client error objects: they may carry
   // request metadata. Credentials are deliberately never written to logs.
-  console.error(`[API ${status}] ${message}`);
+  let actor = 'anonymous';
+  try { const user = currentUser(); actor = `${user.username} (${user.userId})`; } catch { /* public route */ }
+  console.error(`[API ${status}] user=${actor} ${message}`);
   sendJson(response, status, { error: message });
 }
 
@@ -60,17 +78,33 @@ async function readJson<T>(request: IncomingMessage): Promise<T> {
 }
 
 function clusterId(url: URL): string {
-  return url.searchParams.get('clusterId') || 'local';
+  const id = url.searchParams.get('clusterId');
+  if (!id || !/^[0-9a-f-]{36}$/i.test(id)) throw new Error('A valid clusterId is required.');
+  return id;
 }
 
 function requiredNamespace(url: URL): string {
   const namespace = url.searchParams.get('namespace');
   if (!namespace) throw new Error('namespace is required');
+  if (!/^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$/.test(namespace)) throw new Error('namespace is invalid.');
   return namespace;
 }
 
 function pathPart(value: string): string {
-  return decodeURIComponent(value);
+  const decoded = decodeURIComponent(value);
+  if (decoded.length > 253 || !/^[a-z0-9](?:[-.a-z0-9]*[a-z0-9])?$/.test(decoded)) throw new Error('Kubernetes resource name is invalid.');
+  return decoded;
+}
+
+function validateResourcePayload(value: unknown, depth = 0): void {
+  if (depth > 40) throw new Error('Resource structure is too deeply nested.');
+  if (value === null || ['string', 'number', 'boolean'].includes(typeof value)) return;
+  if (Array.isArray(value)) { value.forEach((item) => validateResourcePayload(item, depth + 1)); return; }
+  if (typeof value !== 'object' || Object.getPrototypeOf(value) !== Object.prototype) throw new Error('Resource must contain JSON data only.');
+  for (const [key, item] of Object.entries(value)) {
+    if (key === '__proto__' || key === 'prototype' || key === 'constructor') throw new Error('Resource contains a forbidden key.');
+    validateResourcePayload(item, depth + 1);
+  }
 }
 
 export async function handleApiRequest(
@@ -81,6 +115,11 @@ export async function handleApiRequest(
   if (!url.pathname.startsWith('/api/')) return false;
 
   try {
+    if (request.method && request.method !== 'GET') {
+      const actor = currentUser();
+      const scope = [url.searchParams.get('clusterId') && `cluster=${url.searchParams.get('clusterId')}`, url.searchParams.get('namespace') && `namespace=${url.searchParams.get('namespace')}`].filter(Boolean).join(' ');
+      console.info(`[AUDIT] user=${actor.username} (${actor.userId}) method=${request.method} path=${url.pathname}${scope ? ` ${scope}` : ''}`);
+    }
     if (request.method === 'GET' && url.pathname === '/api/health') {
       const clusters = getResolvedClusters();
       sendJson(response, 200, {
@@ -102,6 +141,11 @@ export async function handleApiRequest(
       } catch (error) {
         sendError(response, error, 400);
       }
+      return true;
+    }
+    if (request.method === 'POST' && url.pathname === '/api/clusters/test-input') {
+      const payload = await readJson<{ input: ClusterInputDto; existingId?: string }>(request);
+      sendJson(response, 200, await testClusterInput(payload.input, payload.existingId));
       return true;
     }
 
@@ -139,6 +183,10 @@ export async function handleApiRequest(
       sendJson(response, 200, await listNamespaces(clusterId(url)));
       return true;
     }
+    if (request.method === 'GET' && url.pathname === '/api/cluster-health') {
+      sendJson(response, 200, await getClusterHealth(clusterId(url)));
+      return true;
+    }
     if (request.method === 'GET' && url.pathname === '/api/deployments') {
       sendJson(response, 200, await listDeployments(clusterId(url), requiredNamespace(url)));
       return true;
@@ -153,6 +201,14 @@ export async function handleApiRequest(
     }
     if (request.method === 'GET' && url.pathname === '/api/configmaps') {
       sendJson(response, 200, await listConfigMaps(clusterId(url), requiredNamespace(url)));
+      return true;
+    }
+
+    const configMapRoute = url.pathname.match(/^\/api\/configmaps\/([^/]+)$/);
+    if (configMapRoute && request.method === 'PUT') {
+      const payload = await readJson<{ resource: unknown }>(request);
+      validateResourcePayload(payload.resource);
+      sendJson(response, 200, await replaceConfigMap(clusterId(url), requiredNamespace(url), pathPart(configMapRoute[1]), payload.resource));
       return true;
     }
 
@@ -173,6 +229,7 @@ export async function handleApiRequest(
       }
       if (request.method === 'PUT') {
         const payload = await readJson<{ resource: unknown }>(request);
+        validateResourcePayload(payload.resource);
         sendJson(response, 200, await replaceDeploymentResource(cluster, namespace, name, payload.resource));
         return true;
       }
@@ -221,6 +278,7 @@ export async function handleApiRequest(
       }
       if (request.method === 'PUT') {
         const payload = await readJson<{ resource: unknown }>(request);
+        validateResourcePayload(payload.resource);
         sendJson(response, 200, await replacePodResource(cluster, namespace, name, payload.resource));
         return true;
       }
@@ -229,7 +287,7 @@ export async function handleApiRequest(
     const podLogs = url.pathname.match(/^\/api\/pods\/([^/]+)\/logs$/);
     if (podLogs && request.method === 'GET') {
       const tail = Number(url.searchParams.get('tailLines') ?? 500);
-      const lines = Number.isFinite(tail) ? Math.trunc(tail) : 500;
+      const lines = Number.isFinite(tail) ? Math.min(10_000, Math.max(1, Math.trunc(tail))) : 500;
       sendText(response, 200, await getPodLogs(
         clusterId(url),
         requiredNamespace(url),

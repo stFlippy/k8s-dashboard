@@ -1,27 +1,27 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   getDeployment,
   getDeploymentEvents,
+  getPodMetrics,
   getPods,
-  removeDeployment,
   replaceDeploymentResource,
   restartDeployment,
   setDeploymentReplicas,
-  updateDeploymentResources
 } from '../../api/kubernetes';
 import type { DeploymentContainer, WorkloadRef } from '../../types/kubernetes';
 import { ActionConfirmModal } from '../common/ActionConfirmModal';
 import type { ActionConfirmRequest } from '../common/ActionConfirmModal';
 import { formatDate } from '../../utils/formatDate';
-import { loadRestartHistory, restartCountLastHour, saveRestartHistory, updateRestartHistory } from '../../utils/restartHistory';
-import type { RestartHistory } from '../../utils/restartHistory';
 import styles from './DeploymentPage.module.css';
+import { CodeEditor } from '../common/CodeEditor';
+import type { PodMetrics } from '../../types/kubernetes';
+import type { UseQueryResult } from '@tanstack/react-query';
 
 interface Props {
   workload: WorkloadRef;
   onOpenPod: (pod: import('../../types/kubernetes').PodRef) => void;
-  onDeleted: () => void;
+  onClose: () => void;
 }
 
 function age(timestamp: string | null): string {
@@ -34,31 +34,30 @@ function age(timestamp: string | null): string {
   return `${Math.floor(hours / 24)} д`;
 }
 
-function ResourceModal({ container, onClose, onApply }: { container: DeploymentContainer; onClose: () => void; onApply: (values: DeploymentContainer) => void; }) {
-  const [values, setValues] = useState(container);
-  const set = (key: keyof DeploymentContainer, value: string) => setValues((current) => ({ ...current, [key]: value || null }));
-  return (
-    <div className={styles.modalOverlay} onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <div className={styles.modal}>
-        <div className={styles.modalHeader}><h2>Изменение ресурсов — {container.name}</h2><button onClick={onClose}>Закрыть</button></div>
-        <div className={styles.modalBody}>
-          <label>CPU request<input value={values.cpuRequest ?? ''} onChange={(event) => set('cpuRequest', event.target.value)} placeholder="250m" /></label>
-          <label>CPU limit<input value={values.cpuLimit ?? ''} onChange={(event) => set('cpuLimit', event.target.value)} placeholder="500m" /></label>
-          <label>Memory request<input value={values.memoryRequest ?? ''} onChange={(event) => set('memoryRequest', event.target.value)} placeholder="128Mi" /></label>
-          <label>Memory limit<input value={values.memoryLimit ?? ''} onChange={(event) => set('memoryLimit', event.target.value)} placeholder="256Mi" /></label>
-        </div>
-        <div className={styles.modalFooter}><button onClick={onClose}>Отмена</button><button className={styles.primary} onClick={() => onApply(values)}>Сохранить</button></div>
-      </div>
-    </div>
-  );
+function quantityNumber(value: string | null): number | null {
+  if (!value) return null; const match = value.trim().match(/^([0-9.]+)(n|u|m|Ki|Mi|Gi|Ti|k|K|M|G)?$/); if (!match) return null;
+  const amount = Number(match[1]); const factors: Record<string, number> = { n: 1e-9, u: 1e-6, m: 1e-3, k: 1e3, K: 1e3, M: 1e6, G: 1e9, Ki: 1024, Mi: 1024 ** 2, Gi: 1024 ** 3, Ti: 1024 ** 4 };
+  return Number.isFinite(amount) ? amount * (factors[match[2] ?? ''] ?? 1) : null;
 }
 
-export function DeploymentPage({ workload, onOpenPod, onDeleted }: Props) {
+function resourcePercent(metrics: PodMetrics | undefined, containers: DeploymentContainer[], resource: 'cpu' | 'memory'): number | null {
+  if (!metrics?.available) return null; let used = 0; let limit = 0;
+  for (const metric of metrics.containers) { const usage = quantityNumber(metric[resource]); const spec = containers.find((item) => item.name === metric.name); const maximum = quantityNumber(resource === 'cpu' ? spec?.cpuLimit ?? null : spec?.memoryLimit ?? null); if (usage !== null && maximum !== null) { used += usage; limit += maximum; } }
+  return limit > 0 ? Math.max(0, (used / limit) * 100) : null;
+}
+
+function resourceUnavailableReason(metrics: PodMetrics | undefined, containers: DeploymentContainer[], resource: 'cpu' | 'memory'): string {
+  if (!metrics) return 'Метрики pod ещё загружаются.'; if (!metrics.available) return metrics.error ?? 'Metrics Server не вернул данные pod.';
+  if (!containers.some((item) => resource === 'cpu' ? item.cpuLimit : item.memoryLimit)) return `Для контейнеров deployment не задан ${resource === 'cpu' ? 'CPU' : 'RAM'} limit.`;
+  return 'Недостаточно данных для расчёта процента.';
+}
+function ResourcePercent({ value, reason }: { value: number | null; reason: string }) { return <span title={value === null ? reason : `Использовано ${Math.round(value)}% от limit`} className={`${styles.resourcePercent} ${value === null ? styles.resourceUnknown : value > 90 ? styles.resourceHigh : value >= 75 ? styles.resourceWarn : styles.resourceOk}`}>{value === null ? '—' : `${Math.round(value)}%`}</span>; }
+
+export function DeploymentPage({ workload, onOpenPod, onClose }: Props) {
   const client = useQueryClient();
   const [message, setMessage] = useState('');
-  const [resourceContainer, setResourceContainer] = useState<DeploymentContainer | null>(null);
   const [confirmRequest, setConfirmRequest] = useState<ActionConfirmRequest | null>(null);
-  const [restartHistory, setRestartHistory] = useState<RestartHistory>(() => loadRestartHistory());
+  const [yamlOpen, setYamlOpen] = useState(false);
   const detail = useQuery({
     queryKey: ['deployment-detail', workload.clusterId, workload.namespace, workload.deploymentName],
     queryFn: () => getDeployment(workload.clusterId, workload.namespace, workload.deploymentName),
@@ -78,23 +77,16 @@ export function DeploymentPage({ workload, onOpenPod, onDeleted }: Props) {
     refetchOnWindowFocus: true
   });
   const deploymentPods = useMemo(() => (pods.data ?? []).filter((pod) => pod.name.startsWith(`${workload.deploymentName}-`)), [pods.data, workload.deploymentName]);
-  useEffect(() => {
-    setRestartHistory((current) => {
-      const next = updateRestartHistory(current, deploymentPods.map((pod) => ({ clusterId: workload.clusterId, namespace: workload.namespace, pod })));
-      if (JSON.stringify(current) === JSON.stringify(next)) return current;
-      saveRestartHistory(next);
-      return next;
-    });
-  }, [pods.dataUpdatedAt, workload.clusterId, workload.namespace]);
+  const podMetrics = useQueries({ queries: deploymentPods.map((pod) => ({ queryKey: ['pod-metrics', workload.clusterId, workload.namespace, pod.name], queryFn: () => getPodMetrics(workload.clusterId, workload.namespace, pod.name), refetchInterval: 5_000 })) }) as UseQueryResult<PodMetrics, Error>[];
   const [replicas, setReplicas] = useState(0);
   const [resourceText, setResourceText] = useState('');
 
   useEffect(() => {
     if (detail.data) {
       setReplicas(detail.data.replicas);
-      setResourceText(JSON.stringify(detail.data.resource, null, 2));
+      if (!yamlOpen) setResourceText(JSON.stringify(detail.data.resource, null, 2));
     }
-  }, [detail.data]);
+  }, [detail.data, yamlOpen]);
 
   const refresh = async () => {
     await Promise.all([
@@ -106,21 +98,6 @@ export function DeploymentPage({ workload, onOpenPod, onDeleted }: Props) {
 
   const scale = useMutation({ mutationFn: (value: number) => setDeploymentReplicas(workload.clusterId, workload.namespace, workload.deploymentName, value), onSuccess: refresh });
   const restart = useMutation({ mutationFn: () => restartDeployment(workload.clusterId, workload.namespace, workload.deploymentName), onSuccess: refresh });
-  const remove = useMutation({ mutationFn: () => removeDeployment(workload.clusterId, workload.namespace, workload.deploymentName) });
-  const resources = useMutation({
-    mutationFn: (container: DeploymentContainer) => updateDeploymentResources(workload.clusterId, workload.namespace, workload.deploymentName, {
-      containerName: container.name,
-      cpuRequest: container.cpuRequest,
-      cpuLimit: container.cpuLimit,
-      memoryRequest: container.memoryRequest,
-      memoryLimit: container.memoryLimit
-    }),
-    onSuccess: async () => {
-      setResourceContainer(null);
-      setMessage('Ресурсы обновлены. Kubernetes начинает rollout нового шаблона подов.');
-      await refresh();
-    }
-  });
   const replace = useMutation({
     mutationFn: async () => {
       let parsed: unknown;
@@ -140,35 +117,28 @@ export function DeploymentPage({ workload, onOpenPod, onDeleted }: Props) {
   if (detail.isLoading) return <div className={styles.state}>Загрузка deployment…</div>;
   if (detail.isError || !detail.data) return <div className={styles.stateError}>Не удалось загрузить deployment: {detail.error?.message}</div>;
   const data = detail.data;
+  const confirmationTarget = { cluster: workload.clusterName, namespace: workload.namespace };
 
   return (
-    <div className={styles.root}>
+    <><div className={styles.drawerOverlay} onClick={onClose} /><aside className={styles.root}>
       <div className={styles.header}>
         <div>
           <h2>{data.name}</h2>
           <p>Кластер: <b>{workload.clusterName}</b> · Namespace: <b>{workload.namespace}</b></p>
         </div>
         <div className={styles.actions}>
-          {data.containers[0] && <button className={styles.primary} onClick={() => setResourceContainer(data.containers[0])}>Изменить ресурсы</button>}
+          <button onClick={() => setYamlOpen(true)}>YAML</button>
           <button onClick={() => setConfirmRequest({
             title: 'Reload pods',
-            description: `Для deployment ${data.name} будет запрошен rolling restart всех подов.`,
+            description: `Для Deployment ${data.name} будет запрошен rolling restart всех Pods.`,
             confirmLabel: 'Выполнить reload pods',
+            target: confirmationTarget,
             onConfirm: async () => {
               await restart.mutateAsync();
-              setMessage('Запрошен rolling restart подов.');
+              setMessage('Запрошен rolling restart Pods.');
             }
           })}>Reload pods</button>
-          <button className={styles.danger} onClick={() => setConfirmRequest({
-            title: 'Удаление deployment',
-            description: `Deployment ${data.name} будет удалён из namespace ${workload.namespace}.`,
-            confirmLabel: 'Удалить deployment',
-            onConfirm: async () => {
-              await remove.mutateAsync();
-              await client.invalidateQueries({ queryKey: ['deployments', workload.clusterId, workload.namespace] });
-              onDeleted();
-            }
-          })}>Удалить</button>
+          <button className={styles.close} onClick={onClose} aria-label="Закрыть" title="Закрыть">×</button>
         </div>
       </div>
 
@@ -185,7 +155,7 @@ export function DeploymentPage({ workload, onOpenPod, onDeleted }: Props) {
           <h3>Реплики</h3>
           <div className={styles.replicaControl}>
             <button onClick={() => setReplicas((value) => Math.max(0, value - 1))}>−</button>
-            <input type="number" min="0" value={replicas} onChange={(event) => setReplicas(Math.max(0, Number(event.target.value) || 0))} />
+            <input type="number" min="0" max="10000" step="1" value={replicas} onKeyDown={(event) => { if (['e','E','+','-','.'].includes(event.key)) event.preventDefault(); }} onChange={(event) => { if (/^\d{0,5}$/.test(event.target.value)) setReplicas(Math.min(10000, Math.max(0, Number(event.target.value) || 0))); }} />
             <button onClick={() => setReplicas((value) => value + 1)}>+</button>
             <button
               className={styles.apply}
@@ -194,6 +164,7 @@ export function DeploymentPage({ workload, onOpenPod, onDeleted }: Props) {
                 title: 'Изменение количества реплик',
                 description: `Количество реплик для ${data.name} изменится с ${data.replicas} до ${replicas}.`,
                 confirmLabel: 'Изменить реплики',
+                target: confirmationTarget,
                 onConfirm: async () => {
                   await scale.mutateAsync(replicas);
                   setMessage(`Количество реплик изменено: ${replicas}.`);
@@ -204,16 +175,16 @@ export function DeploymentPage({ workload, onOpenPod, onDeleted }: Props) {
         </div>
         <div className={styles.sectionBody}>
           <table className={styles.podTable}>
-            <thead><tr><th>Статус</th><th>Имя</th><th>Фаза</th><th>Возраст</th><th>Restarts &lt; 1h</th><th>IP</th><th>Хост</th><th>Действия</th></tr></thead>
-            <tbody>{deploymentPods.map((pod) => (
+            <thead><tr><th>Статус</th><th>Имя</th><th>Фаза</th><th>Возраст</th><th>IP</th><th>CPU</th><th>RAM</th><th>Действия</th></tr></thead>
+            <tbody>{deploymentPods.map((pod, podIndex) => (
               <tr key={pod.name} onClick={() => onOpenPod({ clusterId: workload.clusterId, clusterName: workload.clusterName, namespace: workload.namespace, podName: pod.name, deploymentName: data.name })}>
                 <td><span className={`${styles.podDot} ${styles[pod.status.toLowerCase()]}`} /></td>
-                <td className={styles.mono}>{pod.name}</td><td>{pod.status}</td><td>{age(pod.creationTimestamp)}</td><td>{restartCountLastHour(restartHistory, workload.clusterId, workload.namespace, pod.name)}</td><td>{pod.ip ?? '—'}</td><td>{pod.host ?? '—'}</td>
+                <td className={styles.mono}>{pod.name}</td><td>{pod.status}</td><td>{age(pod.creationTimestamp)}</td><td>{pod.ip ?? '—'}</td><td><ResourcePercent value={resourcePercent(podMetrics[podIndex]?.data, data.containers, 'cpu')} reason={resourceUnavailableReason(podMetrics[podIndex]?.data, data.containers, 'cpu')} /></td><td><ResourcePercent value={resourcePercent(podMetrics[podIndex]?.data, data.containers, 'memory')} reason={resourceUnavailableReason(podMetrics[podIndex]?.data, data.containers, 'memory')} /></td>
                 <td><button className={styles.smallButton} onClick={(event) => { event.stopPropagation(); onOpenPod({ clusterId: workload.clusterId, clusterName: workload.clusterName, namespace: workload.namespace, podName: pod.name, deploymentName: data.name }); }}>Открыть</button></td>
               </tr>
             ))}</tbody>
           </table>
-          {!deploymentPods.length && <div className={styles.empty}>Для этого deployment поды не найдены.</div>}
+          {!deploymentPods.length && <div className={styles.empty}>Для этого Deployment Pods не найдены.</div>}
         </div>
       </section>
 
@@ -244,34 +215,9 @@ export function DeploymentPage({ workload, onOpenPod, onDeleted }: Props) {
         </div>
       </section>
 
-      <section className={styles.section}>
-        <div className={styles.sectionHeader}><h3>YAML</h3><button onClick={() => setConfirmRequest({
-          title: 'Сохранение YAML',
-          description: `Изменения YAML для deployment ${data.name} будут отправлены в кластер.`,
-          confirmLabel: 'Сохранить YAML',
-          onConfirm: async () => {
-            await replace.mutateAsync();
-          }
-        })}>Сохранить</button></div>
-        <div className={styles.sectionBody}>
-          <div className={styles.editorNote}>Без дополнительной YAML-библиотеки редактор использует форматированный JSON. JSON корректен как YAML 1.2.</div>
-          <textarea className={styles.yaml} spellCheck={false} value={resourceText} onChange={(event) => setResourceText(event.target.value)} />
-        </div>
-      </section>
-
-      {resourceContainer && <ResourceModal container={resourceContainer} onClose={() => setResourceContainer(null)} onApply={(value) => {
-        setResourceContainer(null);
-        setConfirmRequest({
-          title: 'Изменение ресурсов контейнера',
-          description: `Ресурсы контейнера ${value.name} будут обновлены. Это приведёт к перезапуску подов deployment ${data.name}.`,
-          confirmLabel: 'Обновить ресурсы',
-          onConfirm: async () => {
-            await resources.mutateAsync(value);
-          }
-        });
-      }} />}
+      {yamlOpen && <div className={styles.yamlModalOverlay} onMouseDown={(event) => event.target === event.currentTarget && setYamlOpen(false)}><div className={styles.yamlModal}><div className={styles.modalHeader}><h2>YAML — {data.name}</h2><div><button className={styles.primary} onClick={() => setConfirmRequest({ title: 'Сохранение YAML', description: `Изменения YAML для deployment ${data.name} будут отправлены в кластер.`, confirmLabel: 'Сохранить YAML', target: confirmationTarget, onConfirm: async () => { await replace.mutateAsync(); setYamlOpen(false); } })}>Сохранить</button><button className={styles.modalClose} onClick={() => setYamlOpen(false)} aria-label="Закрыть" title="Закрыть">×</button></div></div><div className={styles.yamlModalBody}><CodeEditor value={resourceText} onChange={setResourceText} /></div></div></div>}
 
       <ActionConfirmModal request={confirmRequest} onClose={() => setConfirmRequest(null)} />
-    </div>
+    </aside></>
   );
 }

@@ -8,6 +8,7 @@ export interface ClusterDto {
   managedBy: 'environment' | 'user';
   context: string | null;
   kubeconfigPath: string | null;
+  kubeconfigConfigured: boolean;
   server: string | null;
   username: string | null;
   tokenMasked: string | null;
@@ -23,6 +24,7 @@ export interface ClusterInputDto {
   enabled?: boolean;
   context?: string | null;
   kubeconfigPath?: string | null;
+  kubeconfigData?: string | null;
   server?: string | null;
   username?: string | null;
   token?: string | null;
@@ -35,6 +37,10 @@ export interface NamespaceDto {
   name: string;
   age: string;
 }
+
+export interface NodeResourceDto { cpu: string | null; memory: string | null; pods?: string | null; storage?: string | null; }
+export interface ClusterNodeDto { name: string; ready: boolean; roles: string[]; addresses: Array<{ type: string; address: string }>; capacity: NodeResourceDto; allocatable: NodeResourceDto; usage: Pick<NodeResourceDto, 'cpu' | 'memory'> | null; conditions: Array<{ type: string; status: string; reason: string | null; message: string | null; lastTransitionTime: string | null }>; labels: Record<string, string>; taints: string[]; kubeletVersion: string | null; osImage: string | null; kernelVersion: string | null; containerRuntime: string | null; architecture: string | null; }
+export interface ClusterHealthDto { metricsAvailable: boolean; metricsError: string | null; nodes: ClusterNodeDto[]; }
 
 export interface DeploymentDto {
   name: string;
@@ -70,12 +76,13 @@ export interface DeploymentResourcesInputDto {
 export interface PodDto {
   name: string;
   namespace: string;
-  status: 'Running' | 'Pending' | 'Failed' | 'Succeeded' | 'Unknown' | 'Terminated';
+  status: 'Running' | 'Pending' | 'Failed' | 'Unknown';
   creationTimestamp: string | null;
   restartCount: number;
   ip: string | null;
   host: string | null;
   lastRestartAt: string | null;
+  terminating: boolean;
 }
 
 export interface PodConditionDto {
@@ -156,4 +163,5 @@ export interface ConfigMapDto {
   creationTimestamp: string | null;
   data: Record<string, string>;
   binaryDataKeys: string[];
+  resource: unknown;
 }

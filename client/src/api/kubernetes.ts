@@ -3,6 +3,7 @@ import type {
   Cluster,
   ClusterInput,
   ClusterTestResult,
+  ClusterHealth,
   ConfigMap,
   Deployment,
   DeploymentDetail,
@@ -25,13 +26,16 @@ export const createCluster = (input: ClusterInput) => apiSend<Cluster>('/api/clu
 export const updateCluster = (id: string, input: ClusterInput) => apiSend<Cluster>(`/api/clusters/${q(id)}`, 'PUT', input);
 export const deleteCluster = (id: string) => apiDelete(`/api/clusters/${q(id)}`);
 export const testCluster = (id: string) => apiSend<ClusterTestResult>(`/api/clusters/${q(id)}/test`, 'POST', {});
+export const testClusterInput = (input: ClusterInput, existingId?: string) => apiSend<ClusterTestResult>('/api/clusters/test-input', 'POST', { input, existingId });
 
 export const getNamespaces = (clusterId: string) => apiGet<Namespace[]>(`/api/namespaces?${scope(clusterId)}`);
+export const getClusterHealth = (clusterId: string) => apiGet<ClusterHealth>(`/api/cluster-health?${scope(clusterId)}`);
 export const getDeployments = (clusterId: string, namespace: string) => apiGet<Deployment[]>(`/api/deployments?${scope(clusterId, namespace)}`);
 export const getPods = (clusterId: string, namespace: string) => apiGet<Pod[]>(`/api/pods?${scope(clusterId, namespace)}`);
 export const getResourceQuotas = (clusterId: string, namespace: string) => apiGet<ResourceQuota[]>(`/api/resource-quotas?${scope(clusterId, namespace)}`);
 export const getQuotas = getResourceQuotas;
 export const getConfigMaps = (clusterId: string, namespace: string) => apiGet<ConfigMap[]>(`/api/configmaps?${scope(clusterId, namespace)}`);
+export const replaceConfigMap = (clusterId: string, namespace: string, name: string, resource: unknown) => apiSend<ConfigMap>(`/api/configmaps/${q(name)}?${scope(clusterId, namespace)}`, 'PUT', { resource });
 
 export const getDeployment = (clusterId: string, namespace: string, name: string) => apiGet<DeploymentDetail>(`/api/deployments/${q(name)}?${scope(clusterId, namespace)}`);
 export const getDeploymentEvents = (clusterId: string, namespace: string, name: string) => apiGet<DeploymentEvent[]>(`/api/deployments/${q(name)}/events?${scope(clusterId, namespace)}`);

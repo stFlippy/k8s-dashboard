@@ -28,6 +28,7 @@
 .header h3 { margin: 0; font-size: 19px; }
 .body { padding: 18px; display: grid; gap: 16px; }
 .body p { margin: 0; color: var(--text-secondary); line-height: 1.5; }
+.target{padding:10px 12px;border-left:3px solid var(--warning);background:rgba(245,158,11,.09);color:var(--text-secondary)}.target b{color:var(--warning);font-style:italic;text-decoration:underline;text-underline-offset:3px}
 .mathCard {
   display: grid;
   gap: 10px;
@@ -69,3 +70,4 @@
   color: #fff !important;
 }
 .footer button:disabled, .header button:disabled { opacity: .55; cursor: not-allowed; }
+.header .close{display:grid;place-items:center;width:36px;height:36px;padding:0;border:0;background:transparent;color:var(--text-primary);font-size:28px;line-height:1}.header .close:hover{background:transparent;color:var(--error)}

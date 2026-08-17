@@ -2,10 +2,12 @@ import type { ClusterAuthType } from '../types/api.ts';
 
 export interface StoredCluster {
   id: string;
+  ownerId: string;
   name: string;
   authType: ClusterAuthType;
   enabled: boolean;
   kubeconfigPath?: string;
+  encryptedKubeconfig?: string;
   context?: string;
   server?: string;
   username?: string;
@@ -18,5 +20,5 @@ export interface StoredCluster {
 }
 
 export interface ResolvedCluster extends StoredCluster {
-  managedBy: 'environment' | 'user';
+  managedBy: 'user';
 }

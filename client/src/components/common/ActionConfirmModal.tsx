@@ -6,6 +6,8 @@ export interface ActionConfirmRequest {
   description: string;
   confirmLabel: string;
   onConfirm: () => Promise<void> | void;
+  target?: { cluster: string; namespace: string };
+  subject?: string;
 }
 
 interface Props {
@@ -58,16 +60,24 @@ export function ActionConfirmModal({ request, onClose }: Props) {
       <div className={styles.modal} role="dialog" aria-modal="true" aria-labelledby="confirm-action-title">
         <div className={styles.header}>
           <h3 id="confirm-action-title">{request.title}</h3>
-          <button type="button" onClick={onClose} disabled={submitting}>Закрыть</button>
+          <button type="button" className={styles.close} onClick={onClose} disabled={submitting} aria-label="Закрыть" title="Закрыть">×</button>
         </div>
         <div className={styles.body}>
           <p>{request.description}</p>
+          {request.subject && <div className={styles.target}>Действие: <b>{request.subject}</b></div>}
+          {request.target && <div className={styles.target}>Кластер: <b>{request.target.cluster}</b> · Namespace: <b>{request.target.namespace}</b></div>}
           <div className={styles.mathCard}>
             <span>Для подтверждения решите пример:</span>
             <strong>{first} + {second} = ?</strong>
             <input
               value={answer}
               onChange={(event) => setAnswer(event.target.value.replace(/[^0-9-]/g, ''))}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && answer.trim() && !submitting) {
+                  event.preventDefault();
+                  void submit();
+                }
+              }}
               placeholder="Введите ответ"
               autoFocus
             />

@@ -1,21 +1,28 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import * as k8s from '@kubernetes/client-node';
 import { environment } from '../config/environment.ts';
 import { decryptSecret, encryptSecret, secretsAvailable } from '../security/crypto.ts';
 import type { ClusterDto, ClusterInputDto } from '../types/api.ts';
 import type { ResolvedCluster, StoredCluster } from './types.ts';
+import { currentUser } from '../auth/request-context.ts';
+import * as k8s from '@kubernetes/client-node';
 
 interface StoreFile {
-  version: 1;
+  version: 2;
   clusters: StoredCluster[];
 }
 
 function readStore(): StoreFile {
-  if (!existsSync(environment.clusterStorePath)) return { version: 1, clusters: [] };
-  const parsed = JSON.parse(readFileSync(environment.clusterStorePath, 'utf8')) as StoreFile;
-  if (parsed.version !== 1 || !Array.isArray(parsed.clusters)) throw new Error('Invalid cluster store format.');
+  if (!existsSync(environment.clusterStorePath)) return { version: 2, clusters: [] };
+  const parsed = JSON.parse(readFileSync(environment.clusterStorePath, 'utf8')) as StoreFile | { version: 1; clusters: Array<Omit<StoredCluster, 'ownerId'>> };
+  if (!Array.isArray(parsed.clusters) || (parsed.version !== 1 && parsed.version !== 2)) throw new Error('Invalid cluster store format.');
+  if (parsed.version === 1) {
+    const ownerId = currentUser().userId;
+    const migrated: StoreFile = { version: 2, clusters: parsed.clusters.map((cluster) => ({ ...cluster, ownerId })) };
+    writeStore(migrated);
+    return migrated;
+  }
   return parsed;
 }
 
@@ -28,31 +35,9 @@ function writeStore(store: StoreFile): void {
   chmodSync(environment.clusterStorePath, 0o600);
 }
 
-function environmentCluster(): ResolvedCluster {
-  const kc = new k8s.KubeConfig();
-  if (environment.kubeconfig) kc.loadFromFile(environment.kubeconfig);
-  else kc.loadFromDefault();
-  if (environment.kubeContext) kc.setCurrentContext(environment.kubeContext);
-  const context = kc.getCurrentContext();
-  const current = kc.getCurrentCluster();
-  const now = new Date().toISOString();
-  return {
-    id: 'local',
-    name: context || current?.name || 'Local kubeconfig',
-    authType: 'kubeconfig',
-    enabled: true,
-    kubeconfigPath: environment.kubeconfig,
-    context: context || undefined,
-    server: current?.server,
-    skipTlsVerify: current?.skipTLSVerify ?? false,
-    createdAt: now,
-    updatedAt: now,
-    managedBy: 'environment'
-  };
-}
-
 export function getResolvedClusters(): ResolvedCluster[] {
-  return [environmentCluster(), ...readStore().clusters.map((cluster) => ({ ...cluster, managedBy: 'user' as const }))];
+  const ownerId = currentUser().userId;
+  return readStore().clusters.filter((cluster) => cluster.ownerId === ownerId).map((cluster) => ({ ...cluster, managedBy: 'user' as const }));
 }
 
 export function getResolvedCluster(id: string): ResolvedCluster {
@@ -75,6 +60,7 @@ export function toClusterDto(cluster: ResolvedCluster): ClusterDto {
     managedBy: cluster.managedBy,
     context: cluster.context ?? null,
     kubeconfigPath: cluster.kubeconfigPath ?? null,
+    kubeconfigConfigured: Boolean(cluster.encryptedKubeconfig || cluster.kubeconfigPath),
     server: cluster.server ?? null,
     username: cluster.username ?? null,
     tokenMasked: maskSecret(cluster.encryptedToken),
@@ -86,20 +72,41 @@ export function toClusterDto(cluster: ResolvedCluster): ClusterDto {
 }
 
 function normalizeInput(input: ClusterInputDto, existing?: StoredCluster): StoredCluster {
+  if (!input || typeof input !== 'object' || typeof input.name !== 'string' || !['kubeconfig', 'token', 'basic'].includes(input.authType)) throw new Error('Cluster settings are invalid.');
   const name = input.name.trim();
   if (!name) throw new Error('Cluster name is required.');
+  if (name.length > 80) throw new Error('Cluster name must not exceed 80 characters.');
+  if (/[\u0000-\u001f\u007f]/.test(name)) throw new Error('Cluster name contains control characters.');
   const enabled = input.enabled ?? true;
   const now = new Date().toISOString();
   const id = existing?.id ?? randomUUID();
+  const ownerId = currentUser().userId;
   const authType = input.authType;
 
   if (authType === 'kubeconfig') {
+    if ((input.kubeconfigData?.length ?? 0) > 1_000_000 || (input.context?.length ?? 0) > 253) throw new Error('Kubeconfig or context is too large.');
+    const kubeconfigData = input.kubeconfigData?.trim();
+    if (kubeconfigData) {
+      try {
+        const parsed = new k8s.KubeConfig();
+        parsed.loadFromString(kubeconfigData);
+        if (input.context?.trim()) parsed.setCurrentContext(input.context.trim());
+        if (!parsed.getCurrentCluster()) throw new Error('Current cluster is missing.');
+      } catch {
+        throw new Error('Kubeconfig is not a valid Kubernetes configuration.');
+      }
+    }
+    const encryptedKubeconfig = kubeconfigData ? encryptSecret(kubeconfigData) : existing?.encryptedKubeconfig;
+    const legacyPath = existing?.kubeconfigPath;
+    if (!encryptedKubeconfig && !legacyPath) throw new Error('Kubeconfig file content is required.');
     return {
       id,
+      ownerId,
       name,
       authType,
       enabled,
-      kubeconfigPath: input.kubeconfigPath?.trim() || undefined,
+      encryptedKubeconfig,
+      kubeconfigPath: legacyPath,
       context: input.context?.trim() || undefined,
       skipTlsVerify: false,
       createdAt: existing?.createdAt ?? now,
@@ -109,10 +116,13 @@ function normalizeInput(input: ClusterInputDto, existing?: StoredCluster): Store
 
   const server = input.server?.trim();
   if (!server) throw new Error('API server URL is required for token/basic authentication.');
-  if (!/^https?:\/\//i.test(server)) throw new Error('API server must start with http:// or https://.');
+  let serverUrl: URL;
+  try { serverUrl = new URL(server); } catch { throw new Error('API server URL is invalid.'); }
+  if (!['http:', 'https:'].includes(serverUrl.protocol) || serverUrl.username || serverUrl.password) throw new Error('API server must be an http(s) URL without embedded credentials.');
 
   const token = input.token?.trim();
   const password = input.password ?? undefined;
+  if ((token?.length ?? 0) > 65_536 || (password?.length ?? 0) > 1024 || (input.username?.length ?? 0) > 256 || (input.caData?.length ?? 0) > 1_000_000) throw new Error('Cluster credentials are too large.');
   const encryptedToken = token ? encryptSecret(token) : existing?.encryptedToken;
   const encryptedPassword = password ? encryptSecret(password) : existing?.encryptedPassword;
 
@@ -123,6 +133,7 @@ function normalizeInput(input: ClusterInputDto, existing?: StoredCluster): Store
 
   return {
     id,
+    ownerId,
     name,
     authType,
     enabled,
@@ -140,33 +151,43 @@ function normalizeInput(input: ClusterInputDto, existing?: StoredCluster): Store
 export function createCluster(input: ClusterInputDto): ClusterDto {
   const store = readStore();
   const cluster = normalizeInput(input);
+  if (store.clusters.some((item) => item.ownerId === cluster.ownerId && item.name.toLocaleLowerCase() === cluster.name.toLocaleLowerCase())) throw new Error(`Cluster '${cluster.name}' already exists.`);
   store.clusters.push(cluster);
   writeStore(store);
   return toClusterDto({ ...cluster, managedBy: 'user' });
 }
 
+export function resolveClusterInput(input: ClusterInputDto, existingId?: string): ResolvedCluster {
+  const ownerId = currentUser().userId;
+  const existing = existingId ? readStore().clusters.find((cluster) => cluster.id === existingId && cluster.ownerId === ownerId) : undefined;
+  if (existingId && !existing) throw new Error(`Cluster '${existingId}' not found.`);
+  return { ...normalizeInput(input, existing), managedBy: 'user' };
+}
+
 export function updateCluster(id: string, input: ClusterInputDto): ClusterDto {
-  if (id === 'local') throw new Error('The environment cluster is read-only.');
   const store = readStore();
-  const index = store.clusters.findIndex((cluster) => cluster.id === id);
+  const ownerId = currentUser().userId;
+  const index = store.clusters.findIndex((cluster) => cluster.id === id && cluster.ownerId === ownerId);
   if (index < 0) throw new Error(`Cluster '${id}' not found.`);
   const cluster = normalizeInput(input, store.clusters[index]);
+  if (store.clusters.some((item, itemIndex) => itemIndex !== index && item.ownerId === ownerId && item.name.toLocaleLowerCase() === cluster.name.toLocaleLowerCase())) throw new Error(`Cluster '${cluster.name}' already exists.`);
   store.clusters[index] = cluster;
   writeStore(store);
   return toClusterDto({ ...cluster, managedBy: 'user' });
 }
 
 export function deleteCluster(id: string): void {
-  if (id === 'local') throw new Error('The environment cluster cannot be deleted.');
   const store = readStore();
-  const next = store.clusters.filter((cluster) => cluster.id !== id);
+  const ownerId = currentUser().userId;
+  const next = store.clusters.filter((cluster) => cluster.id !== id || cluster.ownerId !== ownerId);
   if (next.length === store.clusters.length) throw new Error(`Cluster '${id}' not found.`);
   writeStore({ ...store, clusters: next });
 }
 
-export function getDecryptedCredentials(cluster: ResolvedCluster): { token?: string; password?: string } {
+export function getDecryptedCredentials(cluster: ResolvedCluster): { token?: string; password?: string; kubeconfig?: string } {
   return {
     token: decryptSecret(cluster.encryptedToken),
-    password: decryptSecret(cluster.encryptedPassword)
+    password: decryptSecret(cluster.encryptedPassword),
+    kubeconfig: decryptSecret(cluster.encryptedKubeconfig)
   };
 }
