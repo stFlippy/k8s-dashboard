@@ -1,4 +1,5 @@
 import { PassThrough } from 'node:stream';
+import { request, type RequestOptions } from 'node:http';
 import * as k8s from '@kubernetes/client-node';
 import { getClusterClients, getClusterKubeConfig } from './cluster-client.ts';
 import type {
@@ -29,6 +30,119 @@ interface MetricPodSource {
   timestamp?: string;
   window?: string;
   containers: MetricContainerSource[];
+}
+
+interface SummaryContainerSource {
+  name: string;
+  cpu?: { time?: string; usageNanoCores?: number };
+  memory?: { time?: string; workingSetBytes?: number; usageBytes?: number };
+}
+
+interface SummaryPodSource {
+  podRef?: { name?: string; namespace?: string };
+  containers?: SummaryContainerSource[];
+}
+
+interface SummarySource { pods?: SummaryPodSource[]; }
+
+interface ThrottleCounters { periods: number; throttled: number; capturedAt: number; }
+const throttleSamples = new Map<string, ThrottleCounters>();
+
+function cpuCores(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const match = value.trim().match(/^([+-]?(?:\d+(?:\.\d+)?|\.\d+))([num]?)$/);
+  if (!match) return null;
+  const amount = Number(match[1]);
+  if (!Number.isFinite(amount)) return null;
+  return amount * (match[2] === 'n' ? 1e-9 : match[2] === 'u' ? 1e-6 : match[2] === 'm' ? 1e-3 : 1);
+}
+
+function bytes(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const match = value.trim().match(/^([+-]?(?:\d+(?:\.\d+)?|\.\d+))([EPTGMK]i?|m)?$/i);
+  if (!match) return null;
+  const amount = Number(match[1]);
+  if (!Number.isFinite(amount)) return null;
+  const rawSuffix = match[2] ?? '';
+  if (rawSuffix === 'm') return amount / 1000;
+  const suffix = rawSuffix.toUpperCase();
+  const binary = suffix.endsWith('I');
+  const unit = binary ? suffix.slice(0, -1) : suffix;
+  const power = ['', 'K', 'M', 'G', 'T', 'P', 'E'].indexOf(unit);
+  if (power < 0) return null;
+  return amount * (binary ? 1024 : 1000) ** power;
+}
+
+async function rawKubernetes(clusterId: string, path: string, accept: string): Promise<{ status: number; body: string }> {
+  const config = await getClusterKubeConfig(clusterId);
+  const cluster = config.getCurrentCluster();
+  if (!cluster) throw new Error('Active Kubernetes cluster is missing.');
+  const url = new URL(`${cluster.server.replace(/\/$/, '')}${path.startsWith('/') ? path : `/${path}`}`);
+  const options: RequestOptions = { method: 'GET', headers: { Accept: accept }, timeout: 20_000 };
+  return new Promise((resolve, reject) => {
+    const req = request(url, options, (response) => {
+      const chunks: Buffer[] = [];
+      let size = 0;
+      response.on('data', (chunk: Buffer) => {
+        size += chunk.length;
+        if (size > 25_000_000) req.destroy(new Error('Kubernetes metrics response is too large.'));
+        else chunks.push(chunk);
+      });
+      response.on('error', reject);
+      response.on('end', () => resolve({ status: response.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }));
+    });
+    req.on('timeout', () => req.destroy(new Error('Kubernetes metrics request timed out.')));
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+function parseJson<T>(body: string, label: string): T {
+  try { return JSON.parse(body) as T; }
+  catch { throw new Error(`${label} returned invalid JSON.`); }
+}
+
+function prometheusLabels(value: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const match of value.matchAll(/([a-zA-Z_][a-zA-Z0-9_]*)="((?:\\.|[^"\\])*)"/g)) {
+    result[match[1]] = match[2].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+  }
+  return result;
+}
+
+function throttling(text: string, clusterId: string, namespace: string, pod: string): Map<string, number | null> {
+  const counters = new Map<string, { periods?: number; throttled?: number }>();
+  for (const line of text.split('\n')) {
+    const match = line.match(/^container_cpu_cfs_(periods_total|throttled_periods_total)\{([^}]*)\}\s+([0-9.eE+-]+)/);
+    if (!match) continue;
+    const labels = prometheusLabels(match[2]);
+    if (labels.namespace !== namespace || labels.pod !== pod || !labels.container) continue;
+    const value = Number(match[3]);
+    if (!Number.isFinite(value)) continue;
+    const current = counters.get(labels.container) ?? {};
+    if (match[1] === 'periods_total') current.periods = value;
+    else current.throttled = value;
+    counters.set(labels.container, current);
+  }
+
+  const now = Date.now();
+  const result = new Map<string, number | null>();
+  for (const [container, current] of counters) {
+    if (current.periods === undefined || current.throttled === undefined) continue;
+    const key = `${clusterId}\u0000${namespace}\u0000${pod}\u0000${container}`;
+    const previous = throttleSamples.get(key);
+    let percent: number | null = null;
+    if (previous && current.periods >= previous.periods && current.throttled >= previous.throttled) {
+      const periodsDelta = current.periods - previous.periods;
+      percent = periodsDelta > 0 ? Math.min(100, Math.max(0, (current.throttled - previous.throttled) / periodsDelta * 100)) : 0;
+    }
+    throttleSamples.set(key, { periods: current.periods, throttled: current.throttled, capturedAt: now });
+    result.set(container, percent);
+  }
+  if (throttleSamples.size > 5_000) {
+    for (const [key, sample] of throttleSamples) if (now - sample.capturedAt > 3_600_000) throttleSamples.delete(key);
+  }
+  return result;
 }
 
 interface EventListSource {
@@ -93,7 +207,7 @@ function sanitizeResource<T>(resource: T): T {
 }
 
 export async function getDeploymentDetail(clusterId: string, namespace: string, name: string): Promise<DeploymentDetailDto> {
-  const { appsApi } = getClusterClients(clusterId);
+  const { appsApi } = await getClusterClients(clusterId);
   const deployment = await appsApi.readNamespacedDeployment({ namespace, name });
   const containers: k8s.V1Container[] = deployment.spec?.template.spec?.containers ?? [];
   return {
@@ -116,7 +230,7 @@ export async function getDeploymentDetail(clusterId: string, namespace: string, 
 }
 
 async function replaceDeployment(clusterId: string, namespace: string, name: string, mutate: (deployment: k8s.V1Deployment) => void): Promise<DeploymentDetailDto> {
-  const { appsApi } = getClusterClients(clusterId);
+  const { appsApi } = await getClusterClients(clusterId);
   const deployment = await appsApi.readNamespacedDeployment({ namespace, name });
   mutate(deployment);
   await appsApi.replaceNamespacedDeployment({ namespace, name, body: deployment });
@@ -172,18 +286,18 @@ export async function replaceDeploymentResource(clusterId: string, namespace: st
   if (deployment.metadata?.name && deployment.metadata.name !== name) throw new Error('metadata.name cannot be changed.');
   if (deployment.metadata?.namespace && deployment.metadata.namespace !== namespace) throw new Error('metadata.namespace cannot be changed.');
   deployment.metadata = { ...(deployment.metadata ?? {}), name, namespace };
-  const { appsApi } = getClusterClients(clusterId);
+  const { appsApi } = await getClusterClients(clusterId);
   await appsApi.replaceNamespacedDeployment({ namespace, name, body: deployment });
   return getDeploymentDetail(clusterId, namespace, name);
 }
 
 export async function deleteDeployment(clusterId: string, namespace: string, name: string): Promise<void> {
-  const { appsApi } = getClusterClients(clusterId);
+  const { appsApi } = await getClusterClients(clusterId);
   await appsApi.deleteNamespacedDeployment({ namespace, name, propagationPolicy: 'Foreground' });
 }
 
 export async function getPodDetail(clusterId: string, namespace: string, name: string): Promise<PodDetailDto> {
-  const { coreApi } = getClusterClients(clusterId);
+  const { coreApi } = await getClusterClients(clusterId);
   const pod = await coreApi.readNamespacedPod({ namespace, name });
   const statuses = new Map<string, k8s.V1ContainerStatus>((pod.status?.containerStatuses ?? []).map((status: k8s.V1ContainerStatus) => [status.name, status]));
   const containers: PodContainerDto[] = (pod.spec?.containers ?? []).map((container: k8s.V1Container) => {
@@ -227,7 +341,7 @@ export async function getPodDetail(clusterId: string, namespace: string, name: s
 }
 
 export async function deletePod(clusterId: string, namespace: string, name: string): Promise<void> {
-  const { coreApi } = getClusterClients(clusterId);
+  const { coreApi } = await getClusterClients(clusterId);
   await coreApi.deleteNamespacedPod({ namespace, name });
 }
 
@@ -237,7 +351,7 @@ export async function replacePodResource(clusterId: string, namespace: string, n
   if (pod.metadata?.name && pod.metadata.name !== name) throw new Error('metadata.name cannot be changed.');
   if (pod.metadata?.namespace && pod.metadata.namespace !== namespace) throw new Error('metadata.namespace cannot be changed.');
   pod.metadata = { ...(pod.metadata ?? {}), name, namespace };
-  const { coreApi } = getClusterClients(clusterId);
+  const { coreApi } = await getClusterClients(clusterId);
   await coreApi.replaceNamespacedPod({ namespace, name, body: pod });
   return getPodDetail(clusterId, namespace, name);
 }
@@ -253,7 +367,7 @@ export async function getPodLogs(
   const detail = await getPodDetail(clusterId, namespace, name);
   const container = containerName || detail.containers[0]?.name;
   if (!container) throw new Error('Pod has no containers.');
-  const config = getClusterKubeConfig(clusterId);
+  const config = await getClusterKubeConfig(clusterId);
   const log = new k8s.Log(config);
   const output = new PassThrough();
   const chunks: Buffer[] = [];
@@ -294,7 +408,7 @@ export async function execPod(clusterId: string, namespace: string, name: string
     stderr.once('finish', resolve);
     stderr.once('error', reject);
   });
-  const exec = new k8s.Exec(getClusterKubeConfig(clusterId));
+  const exec = new k8s.Exec(await getClusterKubeConfig(clusterId));
 
   let status: unknown = null;
   await new Promise<void>((resolve, reject) => {
@@ -354,26 +468,93 @@ export async function execPod(clusterId: string, namespace: string, name: string
 }
 
 export async function getPodMetrics(clusterId: string, namespace: string, name: string): Promise<PodMetricsDto> {
+  const { coreApi } = await getClusterClients(clusterId);
+  const pod = await coreApi.readNamespacedPod({ namespace, name });
+  const usage = new Map<string, { cpu: number | null; memory: number | null }>();
+  let timestamp: string | null = null;
+  let window: string | null = null;
+  let source: PodMetricsDto['source'] = null;
+  let metricsFailure = '';
+
   try {
-    const metrics = new k8s.Metrics(getClusterKubeConfig(clusterId));
-    const list = await metrics.getPodMetrics(namespace);
-    const pod = list.items.find((item: MetricPodSource) => item.metadata.name === name);
-    if (!pod) return { available: false, timestamp: null, window: null, containers: [], error: 'Metrics for this pod were not returned.' };
-    return {
-      available: true,
-      timestamp: pod.timestamp ?? null,
-      window: pod.window ?? null,
-      containers: pod.containers.map((container: MetricContainerSource) => ({ name: container.name, cpu: container.usage.cpu, memory: container.usage.memory }))
-    };
+    const response = await rawKubernetes(clusterId, `/apis/metrics.k8s.io/v1beta1/namespaces/${encodeURIComponent(namespace)}/pods/${encodeURIComponent(name)}`, 'application/json');
+    if (response.status === 200) {
+      const metric = parseJson<MetricPodSource>(response.body, 'Metrics API');
+      for (const item of metric.containers ?? []) usage.set(item.name, { cpu: cpuCores(item.usage?.cpu), memory: bytes(item.usage?.memory) });
+      timestamp = metric.timestamp ?? null;
+      window = metric.window ?? null;
+      source = 'metrics-api';
+    } else {
+      metricsFailure = response.status === 404 ? 'Metrics API не установлен' : `Metrics API вернул HTTP ${response.status}`;
+    }
   } catch (error) {
-    return {
-      available: false,
-      timestamp: null,
-      window: null,
-      containers: [],
-      error: error instanceof Error ? error.message : 'Metrics API is unavailable.'
-    };
+    metricsFailure = error instanceof Error ? error.message : 'Metrics API недоступен';
   }
+
+  const nodeName = pod.spec?.nodeName;
+  if (!usage.size && nodeName) {
+    try {
+      const response = await rawKubernetes(clusterId, `/api/v1/nodes/${encodeURIComponent(nodeName)}/proxy/stats/summary`, 'application/json');
+      if (response.status !== 200) throw new Error(`kubelet stats/summary вернул HTTP ${response.status}`);
+      const summary = parseJson<SummarySource>(response.body, 'kubelet stats/summary');
+      const metricPod = (summary.pods ?? []).find((item) => item.podRef?.namespace === namespace && item.podRef?.name === name);
+      for (const item of metricPod?.containers ?? []) {
+        usage.set(item.name, {
+          cpu: typeof item.cpu?.usageNanoCores === 'number' ? item.cpu.usageNanoCores / 1e9 : null,
+          memory: item.memory?.workingSetBytes ?? item.memory?.usageBytes ?? null
+        });
+        timestamp ??= item.cpu?.time ?? item.memory?.time ?? null;
+      }
+      if (usage.size) source = 'kubelet';
+    } catch (error) {
+      const fallbackFailure = error instanceof Error ? error.message : 'kubelet stats/summary недоступен';
+      metricsFailure = `${metricsFailure || 'Metrics API недоступен'}; ${fallbackFailure}`;
+    }
+  }
+
+  let throttle = new Map<string, number | null>();
+  let throttlingError: string | undefined;
+  if (nodeName) {
+    try {
+      const response = await rawKubernetes(clusterId, `/api/v1/nodes/${encodeURIComponent(nodeName)}/proxy/metrics/cadvisor`, 'text/plain');
+      if (response.status !== 200) throw new Error(`cAdvisor вернул HTTP ${response.status}`);
+      throttle = throttling(response.body, clusterId, namespace, name);
+      if (!throttle.size) throttlingError = 'cAdvisor не вернул CPU CFS counters для контейнеров Pod.';
+    } catch (error) {
+      throttlingError = error instanceof Error ? error.message : 'cAdvisor metrics недоступны.';
+    }
+  } else {
+    throttlingError = 'Pod ещё не назначен на ноду.';
+  }
+
+  const containers = (pod.spec?.containers ?? []).map((container) => {
+    const current = usage.get(container.name);
+    return {
+      name: container.name,
+      cpu: {
+        usageCores: current?.cpu ?? null,
+        requestCores: cpuCores(quantity(container.resources?.requests?.cpu)),
+        limitCores: cpuCores(quantity(container.resources?.limits?.cpu))
+      },
+      memory: {
+        usageBytes: current?.memory ?? null,
+        requestBytes: bytes(quantity(container.resources?.requests?.memory)),
+        limitBytes: bytes(quantity(container.resources?.limits?.memory))
+      },
+      cpuThrottlingPercent: throttle.get(container.name) ?? null
+    };
+  });
+
+  return {
+    available: usage.size > 0,
+    timestamp,
+    window,
+    source,
+    throttlingAvailable: throttle.size > 0,
+    throttlingError,
+    containers,
+    ...(usage.size ? {} : { error: metricsFailure || 'Метрики Pod недоступны.' })
+  };
 }
 
 function eventDto(event: k8s.CoreV1Event): EventDto {
@@ -390,7 +571,7 @@ function eventDto(event: k8s.CoreV1Event): EventDto {
 }
 
 export async function getPodEvents(clusterId: string, namespace: string, name: string): Promise<EventDto[]> {
-  const { coreApi } = getClusterClients(clusterId);
+  const { coreApi } = await getClusterClients(clusterId);
   const events = await coreApi.listNamespacedEvent({
     namespace,
     fieldSelector: `involvedObject.kind=Pod,involvedObject.name=${name}`
@@ -399,7 +580,7 @@ export async function getPodEvents(clusterId: string, namespace: string, name: s
 }
 
 export async function getDeploymentEvents(clusterId: string, namespace: string, name: string): Promise<EventDto[]> {
-  const { coreApi, appsApi } = getClusterClients(clusterId);
+  const { coreApi, appsApi } = await getClusterClients(clusterId);
   const deployment = await appsApi.readNamespacedDeployment({ namespace, name });
   const replicaSets = await appsApi.listNamespacedReplicaSet({ namespace });
   const relatedReplicaSets = replicaSets.items.filter((replicaSet: k8s.V1ReplicaSet) =>

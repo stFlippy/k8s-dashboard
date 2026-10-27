@@ -7,7 +7,7 @@ Quaber — веб-панель для работы с несколькими Kub
 ## Возможности
 
 - персональный список кластеров для каждого пользователя;
-- подключение через kubeconfig, bearer token или логин/пароль с тестом до сохранения;
+- персональный `kubectl login` и изолированный `kubectl proxy` с тестом до сохранения;
 - фильтры Pods по статусу, Deployment, Namespace и кластеру;
 - подсветка недавних рестартов и ручной rollout restart;
 - пользовательские вкладки с собственными фильтрами, порядком и цветом;
@@ -27,14 +27,15 @@ Quaber — веб-панель для работы с несколькими Kub
 - credentials кластеров: AES-256-GCM с ключом `DASHBOARD_MASTER_KEY`.
 
 ```text
-Browser -> frontend -> backend -> Kubernetes API
-                        |
-                        +-> SQLite и зашифрованные credentials
+Browser -> frontend -> backend -> kubectl proxy -> Kubernetes API
+                        |              |
+                        |              +-> персональная identity Kubernetes
+                        +-> SQLite и зашифрованный kubeconfig
 ```
 
 ## Требования и запуск
 
-- Node.js 22.12+ и npm 10+;
+- Node.js 22.20+ и npm 10+ для разработки и сборки; автономному пакету они не нужны;
 - сетевой доступ backend к Kubernetes API;
 - Kubernetes identity с нужным RBAC;
 - Metrics Server для CPU/RAM и полной страницы Cluster Health.
@@ -67,6 +68,14 @@ npm run typecheck
 npm run build
 ```
 
+Автономный пакет для Linux x86-64, которому на целевой машине не нужны Node.js и npm:
+
+```bash
+npm run build:standalone
+```
+
+Результат создаётся в `release/quaber.tar.xz` с отдельным файлом `.sha256`; для сборки требуется `xz`. Промежуточная распакованная версия находится в `.build/standalone/quaber/`, поэтому сборка не затрагивает действующую установку в `release/quaber/` и её данные. В пакет входят backend с собственным Node runtime, собранный frontend, проверка окружения и примеры конфигурации. По умолчанию архив не содержит `kubectl` — ни `bin/kubectl`, ни `addons/kubectl`. После распаковки скопируйте совместимый Linux x86-64 клиент с командами `login` и `proxy` в `addons/kubectl` и выполните `chmod 755 addons/kubectl`; при сборке его можно включить через `QUABER_LOGIN_KUBECTL=/path/to/kubectl`. Без него Quaber запускается, но функции подключения к кластерам недоступны. Инструкция по установке и ограничения целевой машины находятся в `STANDALONE.md` и внутри архива в `README.md`.
+
 `npm run check` дополнительно ищет секреты и намеренно падает при наличии корневого `.env`; запускайте его до создания `.env` или в чистой копии.
 
 ## Конфигурация backend
@@ -77,8 +86,10 @@ npm run build
 | `DASHBOARD_MASTER_KEY` | ключ шифрования, минимум 32 символа | нет |
 | `USER_DATABASE_PATH` | SQLite пользователей и настроек | `server/data/users.sqlite` |
 | `BOOTSTRAP_USER_PATH` | одноразовый файл первого пользователя | `server/data/bootstrap-user.json` |
-| `CLUSTER_STORE_PATH` | legacy-хранилище для миграции | `server/data/clusters.json` |
-| `KUBECONFIG`, `KUBE_CONTEXT` | legacy/default cluster backend-машины | стандартный kubeconfig/context |
+| `CLUSTER_STORE_PATH` | зашифрованные настройки кластеров | `server/data/clusters.json` |
+| `STATIC_DIR` | каталог собранного frontend; автономный пакет задаёт его автоматически | не задан |
+
+Диагностические логи управляются верхнеуровневым `quaber.config.json`. `logging.enabled: false` отключает `INFO`, но сообщения `ERROR` остаются включёнными. Поддерживаемый уровень — `info`.
 
 ## Первичный пользователь
 
@@ -103,140 +114,39 @@ cp server/bootstrap-user.example.json server/data/bootstrap-user.json
 
 # Добавление кластеров
 
-Откройте меню пользователя → `Кластеры` → `Добавить кластер`. Введите уникальное имя, необязательный алиас до пяти символов, выберите способ подключения, заполните поля и нажмите `Тест`. После успешной проверки сохраните запись.
+Откройте меню пользователя → `Кластеры` → `Добавить кластер`. Введите уникальное имя, API server, логин и пароль, затем нажмите `Тест`. После успешной проверки сохраните запись. Это единственный поддерживаемый способ подключения: ручной импорт kubeconfig, bearer token и basic-auth удалены.
 
 Backend должен разрешать DNS-имя API, доверять сертификату и иметь маршрут до адреса. `localhost` означает машину/контейнер backend, не компьютер с браузером.
 
-## Kubeconfig из файла — рекомендуемый способ
+## Kubectl login и proxy
 
-На машине с рабочим `kubectl` проверьте context:
+Режим `Kubectl login — логин / пароль` запускает серверный файл `addons/kubectl` без shell. При добавлении указываются только имя кластера, Kubernetes API server, логин и пароль.
 
-```bash
-kubectl config get-contexts
-kubectl config current-context
-kubectl get namespaces
-```
+Quaber вызывает интерфейс `kubectl login URL --username USER --password PASS`. Для каждого входа создаются отдельные временные `HOME` и `KUBECONFIG`, поэтому kubeconfig разных пользователей не смешиваются. Успешная команда должна записать kubeconfig в этот временный каталог.
 
-Создайте автономный kubeconfig для текущего context:
+Quaber больше не принимает и не передаёт OIDC issuer, CA-сертификаты и флаги отключения TLS-проверки. Определение провайдера авторизации, сертификатов и получение token полностью выполняет используемый `kubectl login`.
 
-```bash
-kubectl config view --raw --minify --flatten > quaber-kubeconfig.yaml
-```
+Пароль передаётся helper параметром `--password`, после входа удаляется из запроса и не сохраняется Quaber. Во время выполнения он может быть виден локальным пользователям сервера, имеющим право читать аргументы чужих процессов. Helper создаёт полный временный kubeconfig, Quaber валидирует его и хранит зашифрованным за учётной записью пользователя. После истечения токена карточка показывает `требуется пароль`; повторно вводится только пароль.
 
-В форме выберите `Kubeconfig` → `Открыть файл`, укажите YAML и нажмите `Тест`. `--flatten` встраивает сертификаты вместо локальных путей, `--raw` включает секреты. Поэтому файл нельзя отправлять в Git, мессенджеры или тикеты; временную копию после импорта лучше удалить.
+При первом Kubernetes-запросе Quaber запускает отдельный `kubectl proxy` для пары «пользователь Quaber — кластер». Proxy слушает только случайный порт `127.0.0.1`, использует непредсказуемый URL-префикс и останавливается после 15 минут простоя, при выходе пользователя, удалении кластера или остановке backend. Поэтому Kubernetes видит identity из персонального kubeconfig и сохраняет её в audit log. Браузер не получает ни kubeconfig, ни локальный адрес proxy.
 
-Допускается полный kubeconfig с несколькими contexts, но автономный минимальный файл предсказуемее. Ограничения:
-
-- относительные пути backend недоступны — используйте `--flatten`;
-- `exec`/auth-provider плагин должен быть установлен и настроен на backend-машине;
-- короткоживущий токен внутри файла потребуется обновлять;
-- максимальный размер файла — 1 МиБ.
-
-## Kubeconfig из буфера
-
-Переключите режим Kubeconfig с файла на редактор и вставьте вывод:
+На backend должны быть доступны Bash, `curl`, `base64`, один из `jq`/`python3`, а `addons/kubectl` должен иметь право на выполнение:
 
 ```bash
-kubectl config view --raw --minify --flatten
+chmod 755 addons/kubectl
 ```
 
-Проверьте наличие `clusters`, `contexts`, `users` и `current-context`, затем нажмите `Тест`. Backend валидирует YAML и хранит содержимое зашифрованным. Режим удобен при работе через SSH.
-
-## API server + bearer token
-
-Этот способ позволяет выдать Quaber отдельную Kubernetes identity с ограниченным RBAC. Не используйте `cluster-admin` без необходимости.
-
-Пример `quaber-access.yaml`:
-
-```yaml
-apiVersion: v1
-kind: Namespace
-metadata: {name: quaber-system}
----
-apiVersion: v1
-kind: ServiceAccount
-metadata: {name: quaber, namespace: quaber-system}
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata: {name: quaber}
-rules:
-  - apiGroups: [""]
-    resources: ["namespaces", "nodes"]
-    verbs: ["get", "list"]
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get", "list", "watch", "update", "patch", "delete"]
-  - apiGroups: [""]
-    resources: ["pods/log"]
-    verbs: ["get"]
-  - apiGroups: [""]
-    resources: ["pods/exec"]
-    verbs: ["create"]
-  - apiGroups: [""]
-    resources: ["events", "resourcequotas"]
-    verbs: ["get", "list"]
-  - apiGroups: [""]
-    resources: ["configmaps"]
-    verbs: ["get", "list", "watch", "update", "patch"]
-  - apiGroups: ["apps"]
-    resources: ["deployments"]
-    verbs: ["get", "list", "watch", "update", "patch"]
-  - apiGroups: ["apps"]
-    resources: ["replicasets"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: ["metrics.k8s.io"]
-    resources: ["pods", "nodes"]
-    verbs: ["get", "list"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata: {name: quaber}
-roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: quaber}
-subjects:
-  - {kind: ServiceAccount, name: quaber, namespace: quaber-system}
-```
-
-Примените и выпустите token:
-
-```bash
-kubectl apply -f quaber-access.yaml
-kubectl -n quaber-system create token quaber --duration=24h
-```
-
-Срок зависит от настроек Kubernetes. Для эксплуатации организуйте принятую у вас ротацию tokens.
-
-Получите URL API и CA:
-
-```bash
-kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}'; echo
-kubectl config view --raw --minify -o jsonpath='{.clusters[0].cluster.certificate-authority-data}'; echo
-```
-
-В форме укажите полный HTTPS URL, token без слова `Bearer` и CA в base64. `Skip TLS verification` используйте только для краткой диагностики.
-
-Проверка RBAC:
-
-```bash
-kubectl auth can-i list pods -A --as=system:serviceaccount:quaber-system:quaber
-kubectl auth can-i create pods/exec -A --as=system:serviceaccount:quaber-system:quaber
-```
-
-Пример даёт возможности интерфейса, включая exec и удаление Pod для rollout. В production сократите правила под реально используемые функции.
-
-## API server + логин/пароль
-
-Укажите HTTPS URL Kubernetes API, username, password и CA. Backend использует Basic Authentication от этой identity. Большинство современных кластеров basic auth отключают; при `401` используйте kubeconfig/OIDC-конфигурацию или token. Логин от сайта облачного провайдера обычно не является Kubernetes credential.
+Для проверки учётных данных без установки Quaber используйте `addons/test-quaber-auth.cmd` или Linux-аналог `addons/test-quaber-auth.sh`. Они проверяют `kubectl login` и выполняют только read-only запросы; пароль в журнал не попадает.
 
 ## Тест, редактирование и ошибки
 
 `Тест` выполняет пробный запрос до сохранения; результат закрывается крестиком. Сохранённый кластер можно редактировать и повторно тестировать. Удаление защищено математическим подтверждением и удаляет только запись Quaber, не Kubernetes-кластер.
 
 - `404` с HTML: указан URL сайта/Ingress вместо Kubernetes API;
-- `401`: credential неверен или истёк;
+- `401`: credential неверен или истёк; если ошибка возникает сразу после успешного Dex login, сравните UTC-время backend, Dex и control-plane;
 - `403`: соединение работает, но RBAC запрещает действие;
 - timeout/DNS/`ECONNREFUSED`: backend не видит API;
-- TLS error: неверен CA или hostname сертификата;
+- TLS error: используемый `kubectl login` не смог проверить сертификат либо hostname; `certificate is not yet valid` обычно означает рассинхронизацию времени;
 - нет метрик: Metrics API отсутствует или запрещён.
 
 Алиас содержит до пяти символов; по умолчанию используются первые пять символов имени. Он выводится отдельной фиксированной частью Namespace-заголовка, чтобы одинаковые Namespace разных кластеров не смешивались.
@@ -283,7 +193,7 @@ Restart определяется по данным Kubernetes, а не по па
 
 ResourceQuota показывает только реально созданные Kubernetes-объекты `ResourceQuota`: hard и used. Пусто означает отсутствие квот либо запрет RBAC, а не нулевую фактическую нагрузку.
 
-Cluster Health выбирает один кластер и показывает суммарные CPU/RAM, ноды, capacity/allocatable/usage, conditions и Details. Usage требует Metrics Server и доступа к `metrics.k8s.io`; без него базовые данные нод остаются доступны.
+Cluster Health выбирает один кластер и показывает суммарные CPU/RAM, ноды, capacity/allocatable/usage, conditions и Details. Usage требует Metrics Server и доступа к `metrics.k8s.io`; без него базовые данные нод остаются доступны. В метриках Pod при отсутствии Metrics Server используется read-only fallback через `nodes/proxy/stats/summary`, а CPU throttling рассчитывается по дельте cAdvisor-счётчиков между обновлениями. Для fallback нужен `get` на `nodes/proxy`.
 
 ## Темы и пасхалка
 
@@ -309,7 +219,7 @@ Quaber умеет exec и изменять workloads. Защищайте его 
 npm run build
 ```
 
-`npm start` запускает backend. Backend не раздаёт `client/dist`: публикуйте frontend static server/reverse proxy и проксируйте `/api` на backend. Передавайте `X-Forwarded-Proto: https` для cookie `Secure`.
+`npm start` запускает обычный backend для размещения за static server/reverse proxy: публикуйте `client/dist` и проксируйте `/api` на backend. Автономный пакет сам раздаёт вложенный frontend. Передавайте `X-Forwarded-Proto: https` для cookie `Secure`.
 
 Храните на постоянных volumes SQLite и runtime data. Резервируйте SQLite, legacy store при наличии и `DASHBOARD_MASTER_KEY` вместе, но в разных защищённых системах. Без master key credentials не восстановить. Bootstrap JSON после импорта не нужен.
 
@@ -333,7 +243,7 @@ kubectl auth can-i create pods/exec -A --as=system:serviceaccount:quaber-system:
 
 Previous-лог существует лишь для предыдущего экземпляра контейнера в том же Pod. После удаления Pod или нового rollout его отсутствие нормально.
 
-При `401` обновите credential и повторите `Тест`. При TLS error проверьте CA и SAN сертификата; отключение проверки TLS — только временная диагностика. Ошибка одного кластера должна отображаться локально и не блокировать остальные.
+При `401` обновите credential и повторите `Тест`. При TLS error проверьте системное доверие, настройки используемого `kubectl login` и SAN сертификата. Ошибка одного кластера должна отображаться локально и не блокировать остальные.
 
 ## Команды разработчика
 

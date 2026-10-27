@@ -9,7 +9,7 @@ import {
   removePod,
   replacePodResource
 } from '../../api/kubernetes';
-import type { Pod, PodRef } from '../../types/kubernetes';
+import type { Pod, PodMetricContainer, PodRef } from '../../types/kubernetes';
 import { ActionConfirmModal } from '../common/ActionConfirmModal';
 import type { ActionConfirmRequest } from '../common/ActionConfirmModal';
 import { formatDate } from '../../utils/formatDate';
@@ -27,6 +27,66 @@ function age(timestamp: string | null): string {
   return hours < 48 ? `${hours} ч ${minutes % 60} мин` : `${Math.floor(hours / 24)} д`;
 }
 
+interface MetricSample { at: number; containers: PodMetricContainer[]; }
+
+function formatCpu(value: number | null): string {
+  if (value === null) return '—';
+  const millicores = value * 1000;
+  return `${millicores < 10 ? millicores.toFixed(2) : millicores.toFixed(1)}m`;
+}
+
+function formatMemory(value: number | null): string {
+  if (value === null) return '—';
+  const mib = value / 1024 / 1024;
+  return `${mib < 10 ? mib.toFixed(2) : mib.toFixed(1)} MiB`;
+}
+
+function formatPercent(value: number | null): string {
+  return value === null ? '—' : `${value.toFixed(value < 10 ? 1 : 0)}%`;
+}
+
+interface MetricChartProps {
+  title: string;
+  history: MetricSample[];
+  containerName: string;
+  value: (container: PodMetricContainer) => number | null;
+  request?: number | null;
+  limit?: number | null;
+  mode: 'percent' | 'actual';
+  formatActual: (value: number | null) => string;
+  alwaysPercent?: boolean;
+}
+
+function MetricChart({ title, history, containerName, value, request = null, limit = null, mode, formatActual, alwaysPercent = false }: MetricChartProps) {
+  const width = 520; const height = 154; const left = 78; const labelLeft = 8; const right = 12; const top = 12; const bottom = 24;
+  const plotWidth = width - left - right; const plotHeight = height - top - bottom;
+  const usePercent = alwaysPercent || mode === 'percent';
+  const basis = limit ?? request;
+  const convert = (item: number | null): number | null => item === null ? null : usePercent && !alwaysPercent ? (basis && basis > 0 ? item / basis * 100 : null) : item;
+  const values = history.map((sample) => { const container = sample.containers.find((item) => item.name === containerName); return convert(container ? value(container) : null); });
+  const requestValue = convert(request); const limitValue = convert(limit);
+  const finite = [...values, requestValue, limitValue].filter((item): item is number => item !== null && Number.isFinite(item));
+  const maximum = Math.max(usePercent ? 100 : 0, ...finite, 0.000001) * 1.08;
+  const x = (index: number) => left + (values.length <= 1 ? plotWidth / 2 : index / (values.length - 1) * plotWidth);
+  const y = (item: number) => top + plotHeight - Math.min(maximum, Math.max(0, item)) / maximum * plotHeight;
+  const points = values.map((item, index) => item === null ? null : `${x(index)},${y(item)}`).filter(Boolean).join(' ');
+  const current = values.at(-1) ?? null;
+  const format = (item: number | null) => usePercent ? formatPercent(item) : formatActual(item);
+  return <div className={styles.metricChart}>
+    <div className={styles.metricChartTitle}><b>{title}</b><strong>{format(current)}</strong></div>
+    <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`График ${title}`}>
+      {[0, .5, 1].map((part) => <line key={part} className={styles.metricGridLine} x1={left} x2={width - right} y1={top + plotHeight * part} y2={top + plotHeight * part} />)}
+      <text className={styles.metricAxisLabel} x={labelLeft} y={top + 4} textAnchor="start">{format(maximum)}</text><text className={styles.metricAxisLabel} x={labelLeft} y={top + plotHeight + 4} textAnchor="start">0</text>
+      {requestValue !== null && <line className={styles.metricRequestLine} x1={left} x2={width - right} y1={y(requestValue)} y2={y(requestValue)} />}
+      {limitValue !== null && <line className={styles.metricLimitLine} x1={left} x2={width - right} y1={y(limitValue)} y2={y(limitValue)} />}
+      {points && <polyline className={styles.metricUsageLine} points={points} />}
+      {values.length === 1 && current !== null && <circle className={styles.metricUsagePoint} cx={x(0)} cy={y(current)} r="3" />}
+      <text x={left} y={height - 5}>{values.length > 1 ? `${Math.max(1, Math.round((history.at(-1)!.at - history[0].at) / 1000))} сек истории` : 'первый замер'}</text>
+    </svg>
+    <div className={styles.metricLegend}><span className={styles.legendUsage}>Текущее: {format(current)}</span>{request !== null && <span className={styles.legendRequest}>Request: {format(requestValue)}</span>}{limit !== null && <span className={styles.legendLimit}>Limit: {format(limitValue)}</span>}{usePercent && !alwaysPercent && <em>база: {limit !== null ? 'limit' : request !== null ? 'request' : 'не задана'}</em>}</div>
+  </div>;
+}
+
 export function PodPanel({ pod, onClose }: Props) {
   const queryClient = useQueryClient();
   const [tab, setTab] = useState<Tab>('logs');
@@ -38,6 +98,8 @@ export function PodPanel({ pod, onClose }: Props) {
   const [terminal, setTerminal] = useState<Array<{ command: string; output: string; error?: boolean }>>([]);
   const [resourceText, setResourceText] = useState('');
   const [message, setMessage] = useState('');
+  const [metricMode, setMetricMode] = useState<'percent' | 'actual'>('percent');
+  const [metricHistory, setMetricHistory] = useState<MetricSample[]>([]);
   const [consoleUnlockedUntil, setConsoleUnlockedUntil] = useState(0);
   const [confirmRequest, setConfirmRequest] = useState<ActionConfirmRequest | null>(null);
   const consoleInputRef = useRef<HTMLInputElement>(null);
@@ -66,6 +128,7 @@ export function PodPanel({ pod, onClose }: Props) {
       setTerminal([]);
       setConsoleUnlockedUntil(0);
       setShowPreviousLogs(false);
+      setMetricHistory([]);
     } else {
       setConsoleUnlockedUntil(0);
     }
@@ -101,6 +164,17 @@ export function PodPanel({ pod, onClose }: Props) {
   }});
   const runExec = useMutation({ mutationFn: (value: string) => execPod(key[0], key[1], key[2], container, value) });
   const consoleUnlocked = consoleUnlockedUntil > Date.now();
+
+  useEffect(() => {
+    if (!metrics.data?.available) return;
+    const at = metrics.data.timestamp ? new Date(metrics.data.timestamp).getTime() : Date.now();
+    const safeAt = Number.isFinite(at) ? at : Date.now();
+    setMetricHistory((current) => {
+      const sample = { at: safeAt, containers: metrics.data!.containers };
+      if (current.at(-1)?.at === safeAt) return [...current.slice(0, -1), sample];
+      return [...current, sample].slice(-60);
+    });
+  }, [metrics.dataUpdatedAt]);
 
   useEffect(() => {
     if (!consoleUnlockedUntil) return;
@@ -231,7 +305,19 @@ export function PodPanel({ pod, onClose }: Props) {
             }
           })}>Сохранить</button></div><CodeEditor value={resourceText} onChange={setResourceText} /></div>}
 
-          {tab === 'metrics' && <div className={styles.metrics}>{metrics.isLoading ? <div>Загрузка метрик…</div> : metrics.data?.available ? metrics.data.containers.map((item) => <div className={styles.metricCard} key={item.name}><div><span>{item.name}</span><b>{item.cpu}</b></div><p>CPU</p><div><span>Память</span><b>{item.memory}</b></div><p>Окно метрик {metrics.data?.window ?? '—'}</p></div>) : <div className={styles.metricUnavailable}>Метрики недоступны: {metrics.data?.error ?? metrics.error?.message ?? 'metrics-server может быть не установлен.'}</div>}</div>}
+          {tab === 'metrics' && <div className={styles.metricsPane}>
+            <div className={styles.metricsToolbar}><div><b>Метрики Pod</b><div className={styles.metricSources}><span className={`${styles.metricSource} ${metrics.data?.source === 'metrics-api' ? styles.sourcePrimary : metrics.data?.source === 'kubelet' ? styles.sourceFallback : styles.sourceUnavailable}`}>CPU/RAM: {metrics.data?.source === 'metrics-api' ? 'Metrics API' : metrics.data?.source === 'kubelet' ? 'kubelet fallback' : 'нет данных'}</span><span className={`${styles.metricSource} ${metrics.data?.throttlingAvailable ? styles.sourceSecondary : styles.sourceUnavailable}`}>Throttling: {metrics.data?.throttlingAvailable ? 'cAdvisor' : 'нет данных'}</span>{metrics.data?.window && <span className={styles.metricWindow}>Окно: {metrics.data.window}</span>}</div></div><div className={styles.metricMode}><button className={metricMode === 'percent' ? styles.activeMode : ''} onClick={() => setMetricMode('percent')}>%</button><button className={metricMode === 'actual' ? styles.activeMode : ''} onClick={() => setMetricMode('actual')}>Фактические</button></div></div>
+            {metrics.isLoading && <div className={styles.loading}>Загрузка метрик…</div>}
+            {!metrics.isLoading && metrics.data?.available && <div className={styles.metrics}>{metrics.data.containers.map((item) => <div className={styles.metricCard} key={item.name}>
+              <div className={styles.metricContainerTitle}><b>{item.name}</b><span>{metrics.data?.timestamp ? new Date(metrics.data.timestamp).toLocaleTimeString() : ''}</span></div>
+              <MetricChart title="CPU" history={metricHistory} containerName={item.name} value={(containerMetric) => containerMetric.cpu.usageCores} request={item.cpu.requestCores} limit={item.cpu.limitCores} mode={metricMode} formatActual={formatCpu} />
+              <MetricChart title="RAM" history={metricHistory} containerName={item.name} value={(containerMetric) => containerMetric.memory.usageBytes} request={item.memory.requestBytes} limit={item.memory.limitBytes} mode={metricMode} formatActual={formatMemory} />
+              <MetricChart title="CPU throttling" history={metricHistory} containerName={item.name} value={(containerMetric) => containerMetric.cpuThrottlingPercent} mode={metricMode} formatActual={formatPercent} alwaysPercent />
+              {metrics.data?.throttlingAvailable && item.cpuThrottlingPercent === null && <div className={styles.metricNote}>CPU throttling будет рассчитан после следующего обновления метрик.</div>}
+              {!metrics.data?.throttlingAvailable && <div className={styles.metricNote}>CPU throttling недоступен: {metrics.data?.throttlingError ?? 'cAdvisor не вернул данные.'}</div>}
+            </div>)}</div>}
+            {!metrics.isLoading && !metrics.data?.available && <div className={styles.metricUnavailable}>Метрики недоступны: {metrics.data?.error ?? metrics.error?.message ?? 'Нет Metrics API и доступа к kubelet stats/summary.'}</div>}
+          </div>}
 
           {tab === 'events' && <div className={styles.eventsWrap}><table className={styles.events}><thead><tr><th>Тип</th><th>Причина</th><th>Сообщение</th><th>Источник</th><th>Дата</th><th>Кол-во</th></tr></thead><tbody>{events.data?.map((item, index) => <tr key={`${item.reason}-${item.time}-${index}`}><td><span className={`${styles.eventType} ${item.type.toLowerCase() === 'warning' ? styles.eventWarning : styles.eventNormal}`}>{item.type}</span></td><td>{item.reason}</td><td>{item.message}</td><td>{item.source}</td><td>{item.time ? formatDate(item.time) : '—'}</td><td>{item.count}</td></tr>)}</tbody></table>{events.isLoading && <div className={styles.loading}>Загрузка событий…</div>}</div>}
 

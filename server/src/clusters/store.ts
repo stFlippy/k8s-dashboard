@@ -37,7 +37,9 @@ function writeStore(store: StoreFile): void {
 
 export function getResolvedClusters(): ResolvedCluster[] {
   const ownerId = currentUser().userId;
-  return readStore().clusters.filter((cluster) => cluster.ownerId === ownerId).map((cluster) => ({ ...cluster, managedBy: 'user' as const }));
+  return readStore().clusters
+    .filter((cluster) => cluster.ownerId === ownerId && cluster.authType === 'kubectl-login')
+    .map((cluster) => ({ ...cluster, managedBy: 'user' as const }));
 }
 
 export function getResolvedCluster(id: string): ResolvedCluster {
@@ -47,8 +49,21 @@ export function getResolvedCluster(id: string): ResolvedCluster {
   return cluster;
 }
 
-function maskSecret(encrypted: string | undefined): string | null {
-  return encrypted ? '••••••••••••' : null;
+function loginTokenExpired(cluster: ResolvedCluster): boolean {
+  if (cluster.authType !== 'kubectl-login') return true;
+  try {
+    const kubeconfig = decryptSecret(cluster.encryptedKubeconfig);
+    if (!kubeconfig) return true;
+    const parsedConfig = new k8s.KubeConfig();
+    parsedConfig.loadFromString(kubeconfig);
+    const value = parsedConfig.getCurrentUser()?.token;
+    const payload = value?.split('.')[1];
+    if (!payload) return true;
+    const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as { exp?: unknown };
+    return typeof parsed.exp !== 'number' || parsed.exp * 1000 <= Date.now() + 30_000;
+  } catch {
+    return true;
+  }
 }
 
 export function toClusterDto(cluster: ResolvedCluster): ClusterDto {
@@ -63,16 +78,13 @@ export function toClusterDto(cluster: ResolvedCluster): ClusterDto {
     kubeconfigConfigured: Boolean(cluster.encryptedKubeconfig || cluster.kubeconfigPath),
     server: cluster.server ?? null,
     username: cluster.username ?? null,
-    tokenMasked: maskSecret(cluster.encryptedToken),
-    passwordMasked: maskSecret(cluster.encryptedPassword),
-    caConfigured: Boolean(cluster.caData),
-    skipTlsVerify: cluster.skipTlsVerify,
+    loginRequired: loginTokenExpired(cluster),
     secretsLocked: !secretsAvailable()
   };
 }
 
 function normalizeInput(input: ClusterInputDto, existing?: StoredCluster): StoredCluster {
-  if (!input || typeof input !== 'object' || typeof input.name !== 'string' || !['kubeconfig', 'token', 'basic'].includes(input.authType)) throw new Error('Cluster settings are invalid.');
+  if (!input || typeof input !== 'object' || typeof input.name !== 'string' || input.authType !== 'kubectl-login') throw new Error('Only kubectl login through the per-user proxy is supported.');
   const name = input.name.trim();
   if (!name) throw new Error('Cluster name is required.');
   if (name.length > 80) throw new Error('Cluster name must not exceed 80 characters.');
@@ -81,55 +93,29 @@ function normalizeInput(input: ClusterInputDto, existing?: StoredCluster): Store
   const now = new Date().toISOString();
   const id = existing?.id ?? randomUUID();
   const ownerId = currentUser().userId;
-  const authType = input.authType;
+  const authType = 'kubectl-login' as const;
 
-  if (authType === 'kubeconfig') {
-    if ((input.kubeconfigData?.length ?? 0) > 1_000_000 || (input.context?.length ?? 0) > 253) throw new Error('Kubeconfig or context is too large.');
-    const kubeconfigData = input.kubeconfigData?.trim();
-    if (kubeconfigData) {
-      try {
-        const parsed = new k8s.KubeConfig();
-        parsed.loadFromString(kubeconfigData);
-        if (input.context?.trim()) parsed.setCurrentContext(input.context.trim());
-        if (!parsed.getCurrentCluster()) throw new Error('Current cluster is missing.');
-      } catch {
-        throw new Error('Kubeconfig is not a valid Kubernetes configuration.');
-      }
-    }
-    const encryptedKubeconfig = kubeconfigData ? encryptSecret(kubeconfigData) : existing?.encryptedKubeconfig;
-    const legacyPath = existing?.kubeconfigPath;
-    if (!encryptedKubeconfig && !legacyPath) throw new Error('Kubeconfig file content is required.');
-    return {
-      id,
-      ownerId,
-      name,
-      authType,
-      enabled,
-      encryptedKubeconfig,
-      kubeconfigPath: legacyPath,
-      context: input.context?.trim() || undefined,
-      skipTlsVerify: false,
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: now
-    };
-  }
-
-  const server = input.server?.trim();
-  if (!server) throw new Error('API server URL is required for token/basic authentication.');
+  const server = input.server?.trim() || existing?.server;
+  if (!server) throw new Error('API server URL is required for this authentication type.');
   let serverUrl: URL;
   try { serverUrl = new URL(server); } catch { throw new Error('API server URL is invalid.'); }
   if (!['http:', 'https:'].includes(serverUrl.protocol) || serverUrl.username || serverUrl.password) throw new Error('API server must be an http(s) URL without embedded credentials.');
 
-  const token = input.token?.trim();
-  const password = input.password ?? undefined;
-  if ((token?.length ?? 0) > 65_536 || (password?.length ?? 0) > 1024 || (input.username?.length ?? 0) > 256 || (input.caData?.length ?? 0) > 1_000_000) throw new Error('Cluster credentials are too large.');
-  const encryptedToken = token ? encryptSecret(token) : existing?.encryptedToken;
-  const encryptedPassword = password ? encryptSecret(password) : existing?.encryptedPassword;
-
-  if (authType === 'token' && !encryptedToken) throw new Error('Bearer token is required.');
-  if (authType === 'basic' && (!input.username?.trim() || !encryptedPassword)) {
-    throw new Error('Username and password are required.');
+  const username = input.username?.trim() || existing?.username;
+  const kubeconfigData = input.kubeconfigData?.trim();
+  if ((kubeconfigData?.length ?? 0) > 1_000_000 || (input.password?.length ?? 0) > 1024 || (username?.length ?? 0) > 256) throw new Error('Cluster credentials are too large.');
+  if (!username) throw new Error('Username is required.');
+  if (kubeconfigData) {
+    try {
+      const parsed = new k8s.KubeConfig();
+      parsed.loadFromString(kubeconfigData);
+      if (!parsed.getCurrentCluster() || !parsed.getCurrentUser()) throw new Error('Current context is incomplete.');
+    } catch {
+      throw new Error('kubectl login returned an invalid kubeconfig.');
+    }
   }
+  const encryptedKubeconfig = kubeconfigData ? encryptSecret(kubeconfigData) : existing?.encryptedKubeconfig;
+  if (!encryptedKubeconfig) throw new Error('A successful kubectl login is required.');
 
   return {
     id,
@@ -138,11 +124,8 @@ function normalizeInput(input: ClusterInputDto, existing?: StoredCluster): Store
     authType,
     enabled,
     server: server.replace(/\/$/, ''),
-    username: authType === 'basic' ? input.username?.trim() : undefined,
-    encryptedToken: authType === 'token' ? encryptedToken : undefined,
-    encryptedPassword: authType === 'basic' ? encryptedPassword : undefined,
-    caData: input.caData?.trim() || existing?.caData,
-    skipTlsVerify: Boolean(input.skipTlsVerify),
+    username,
+    encryptedKubeconfig,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now
   };
@@ -164,6 +147,13 @@ export function resolveClusterInput(input: ClusterInputDto, existingId?: string)
   return { ...normalizeInput(input, existing), managedBy: 'user' };
 }
 
+export function getOwnedClusterSettings(id: string): StoredCluster {
+  const ownerId = currentUser().userId;
+  const cluster = readStore().clusters.find((item) => item.id === id && item.ownerId === ownerId);
+  if (!cluster) throw new Error(`Cluster '${id}' not found.`);
+  return cluster;
+}
+
 export function updateCluster(id: string, input: ClusterInputDto): ClusterDto {
   const store = readStore();
   const ownerId = currentUser().userId;
@@ -176,6 +166,41 @@ export function updateCluster(id: string, input: ClusterInputDto): ClusterDto {
   return toClusterDto({ ...cluster, managedBy: 'user' });
 }
 
+export function updateClusterLoginKubeconfigs(updates: Array<{ id: string; kubeconfig: string }>): ClusterDto[] {
+  if (!updates.length) throw new Error('At least one cluster is required.');
+  const store = readStore();
+  const ownerId = currentUser().userId;
+  const ids = new Set(updates.map((item) => item.id));
+  if (ids.size !== updates.length) throw new Error('Cluster list contains duplicates.');
+
+  const selected = updates.map(({ id }) => {
+    const cluster = store.clusters.find((item) => item.id === id && item.ownerId === ownerId);
+    if (!cluster) throw new Error(`Cluster '${id}' not found.`);
+    if (cluster.authType !== 'kubectl-login' || !cluster.username) throw new Error(`Cluster '${cluster.name}' does not use kubectl login.`);
+    return cluster;
+  });
+  const login = selected[0].username!.trim().toLocaleLowerCase();
+  if (selected.some((cluster) => cluster.username!.trim().toLocaleLowerCase() !== login)) {
+    throw new Error('All clusters in one login request must use the same username.');
+  }
+
+  const now = new Date().toISOString();
+  for (const update of updates) {
+    if (!update.kubeconfig || update.kubeconfig.length > 1_000_000) throw new Error('kubectl login returned an invalid kubeconfig.');
+    try {
+      const parsed = new k8s.KubeConfig();
+      parsed.loadFromString(update.kubeconfig);
+      if (!parsed.getCurrentCluster() || !parsed.getCurrentUser()) throw new Error('Incomplete kubeconfig.');
+    } catch {
+      throw new Error('kubectl login returned an invalid kubeconfig.');
+    }
+    const index = store.clusters.findIndex((item) => item.id === update.id && item.ownerId === ownerId);
+    store.clusters[index] = { ...store.clusters[index], encryptedKubeconfig: encryptSecret(update.kubeconfig), updatedAt: now };
+  }
+  writeStore(store);
+  return updates.map(({ id }) => toClusterDto({ ...store.clusters.find((item) => item.id === id && item.ownerId === ownerId)!, managedBy: 'user' }));
+}
+
 export function deleteCluster(id: string): void {
   const store = readStore();
   const ownerId = currentUser().userId;
@@ -184,10 +209,6 @@ export function deleteCluster(id: string): void {
   writeStore({ ...store, clusters: next });
 }
 
-export function getDecryptedCredentials(cluster: ResolvedCluster): { token?: string; password?: string; kubeconfig?: string } {
-  return {
-    token: decryptSecret(cluster.encryptedToken),
-    password: decryptSecret(cluster.encryptedPassword),
-    kubeconfig: decryptSecret(cluster.encryptedKubeconfig)
-  };
+export function getDecryptedCredentials(cluster: ResolvedCluster): { kubeconfig?: string } {
+  return { kubeconfig: decryptSecret(cluster.encryptedKubeconfig) };
 }

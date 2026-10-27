@@ -31,7 +31,7 @@ function lastRestartAt(containerStatuses: k8s.V1ContainerStatus[] | undefined): 
 }
 
 export async function listPods(clusterId: string, namespace: string): Promise<PodDto[]> {
-  const { coreApi } = getClusterClients(clusterId);
+  const { coreApi } = await getClusterClients(clusterId);
   const response = await coreApi.listNamespacedPod({ namespace });
 
   return response.items.map((item: k8s.V1Pod) => ({

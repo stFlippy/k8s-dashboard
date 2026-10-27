@@ -6,11 +6,11 @@ interface NodeMetric { metadata: { name?: string }; usage: { cpu?: string; memor
 const text = (value: unknown): string | null => value === undefined || value === null ? null : String(value);
 
 export async function getClusterHealth(clusterId: string): Promise<ClusterHealthDto> {
-  const { coreApi } = getClusterClients(clusterId);
+  const { coreApi } = await getClusterClients(clusterId);
   const nodes = await coreApi.listNode();
   let metrics = new Map<string, NodeMetric>(); let metricsError: string | null = null;
   try {
-    const response = await new k8s.Metrics(getClusterKubeConfig(clusterId)).getNodeMetrics();
+    const response = await new k8s.Metrics(await getClusterKubeConfig(clusterId)).getNodeMetrics();
     metrics = new Map((response.items as NodeMetric[]).map((item) => [item.metadata.name ?? '', item]));
   } catch (error) { metricsError = error instanceof Error ? error.message : 'Node metrics are unavailable.'; }
   return {

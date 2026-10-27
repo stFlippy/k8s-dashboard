@@ -3,7 +3,7 @@ import { getClusterClients } from './cluster-client.ts';
 import type { DeploymentDto } from '../types/api.ts';
 
 export async function listDeployments(clusterId: string, namespace: string): Promise<DeploymentDto[]> {
-  const { appsApi } = getClusterClients(clusterId);
+  const { appsApi } = await getClusterClients(clusterId);
   const response = await appsApi.listNamespacedDeployment({ namespace });
 
   return response.items.map((item: k8s.V1Deployment) => ({

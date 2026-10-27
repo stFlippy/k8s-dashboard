@@ -3,6 +3,9 @@ import { environment } from './config/environment.ts';
 import { handleApiRequest } from './api/router.ts';
 import { getRequestSession, handleAuthRequest } from './auth/router.ts';
 import { runAsUser } from './auth/request-context.ts';
+import { logError, logInfo } from './logging/logger.ts';
+import { stopAllClusterProxies } from './kubernetes/kubectl-proxy.ts';
+import { serveStaticFile } from './static-files.ts';
 
 const server = createServer(async (request: IncomingMessage, response: ServerResponse) => {
   try {
@@ -42,11 +45,12 @@ const server = createServer(async (request: IncomingMessage, response: ServerRes
       ? await runAsUser({ userId: auth.user.id, username: auth.user.username }, () => handleApiRequest(request, response, url))
       : await handleApiRequest(request, response, url);
     if (!handled) {
+      if (await serveStaticFile(request, response, url)) return;
       response.statusCode = 404;
       response.end('Not Found');
     }
   } catch (error) {
-    console.error('Unhandled request error:', error instanceof Error ? error.message : 'Unknown error');
+    logError('unhandled request', error);
     if (!response.headersSent) {
       response.statusCode = 500;
       response.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -58,10 +62,17 @@ const server = createServer(async (request: IncomingMessage, response: ServerRes
 });
 
 server.on('error', (error: Error) => {
-  console.error('Server error:', error.message);
+  logError('server', error);
   process.exitCode = 1;
 });
 
 server.listen(environment.port, () => {
-  console.log(`K8s backend listening on http://localhost:${environment.port}`);
+  logInfo('server start', { port: environment.port });
 });
+
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.once(signal, () => {
+    stopAllClusterProxies();
+    server.close(() => process.exit(0));
+  });
+}

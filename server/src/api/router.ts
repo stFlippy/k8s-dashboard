@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { createCluster, deleteCluster, getResolvedClusters, toClusterDto, updateCluster } from '../clusters/store.ts';
+import { createCluster, deleteCluster, getResolvedClusters, toClusterDto, updateCluster, updateClusterLoginKubeconfigs } from '../clusters/store.ts';
 import { listNamespaces } from '../kubernetes/namespaces.ts';
 import { listDeployments } from '../kubernetes/deployments.ts';
 import { listPods } from '../kubernetes/pods.ts';
@@ -24,7 +24,9 @@ import {
 } from '../kubernetes/resources.ts';
 import type { ClusterInputDto, DeploymentResourcesInputDto, ExecInputDto } from '../types/api.ts';
 import { getClusterHealth } from '../kubernetes/cluster-health.ts';
-import { currentUser } from '../auth/request-context.ts';
+import { authenticateKubectlLoginClusters, authenticateKubectlLoginInput } from '../kubernetes/kubectl-login-cli.ts';
+import { logError, logInfo, requestAction } from '../logging/logger.ts';
+import { stopClusterProxy } from '../kubernetes/kubectl-proxy.ts';
 
 function sendJson(response: ServerResponse, status: number, data: unknown): void {
   const body = JSON.stringify(data);
@@ -57,9 +59,7 @@ function sendError(response: ServerResponse, error: unknown, status = 500): void
   const message = safeErrorMessage(error);
   // Do not dump arbitrary Kubernetes client error objects: they may carry
   // request metadata. Credentials are deliberately never written to logs.
-  let actor = 'anonymous';
-  try { const user = currentUser(); actor = `${user.username} (${user.userId})`; } catch { /* public route */ }
-  console.error(`[API ${status}] user=${actor} ${message}`);
+  logError('API request failed', message, { status });
   sendJson(response, status, { error: message });
 }
 
@@ -115,11 +115,8 @@ export async function handleApiRequest(
   if (!url.pathname.startsWith('/api/')) return false;
 
   try {
-    if (request.method && request.method !== 'GET') {
-      const actor = currentUser();
-      const scope = [url.searchParams.get('clusterId') && `cluster=${url.searchParams.get('clusterId')}`, url.searchParams.get('namespace') && `namespace=${url.searchParams.get('namespace')}`].filter(Boolean).join(' ');
-      console.info(`[AUDIT] user=${actor.username} (${actor.userId}) method=${request.method} path=${url.pathname}${scope ? ` ${scope}` : ''}`);
-    }
+    const action = requestAction(request.method, url.pathname);
+    if (action) logInfo(action, { clusterId: url.searchParams.get('clusterId'), namespace: url.searchParams.get('namespace') });
     if (request.method === 'GET' && url.pathname === '/api/health') {
       const clusters = getResolvedClusters();
       sendJson(response, 200, {
@@ -137,22 +134,42 @@ export async function handleApiRequest(
 
     if (request.method === 'POST' && url.pathname === '/api/clusters') {
       try {
-        sendJson(response, 201, createCluster(await readJson<ClusterInputDto>(request)));
+        const input = await authenticateKubectlLoginInput(await readJson<ClusterInputDto>(request));
+        sendJson(response, 201, createCluster(input));
       } catch (error) {
         sendError(response, error, 400);
       }
       return true;
     }
     if (request.method === 'POST' && url.pathname === '/api/clusters/test-input') {
-      const payload = await readJson<{ input: ClusterInputDto; existingId?: string }>(request);
-      sendJson(response, 200, await testClusterInput(payload.input, payload.existingId));
+      try {
+        const payload = await readJson<{ input: ClusterInputDto; existingId?: string }>(request);
+        sendJson(response, 200, await testClusterInput(payload.input, payload.existingId));
+      } catch (error) {
+        sendError(response, error, 400);
+      }
+      return true;
+    }
+    if (request.method === 'POST' && url.pathname === '/api/clusters/login') {
+      try {
+        const payload = await readJson<{ clusterIds?: unknown; password?: unknown }>(request);
+        const clusterIds = payload.clusterIds;
+        const password = payload.password;
+        if (!Array.isArray(clusterIds) || clusterIds.some((id) => typeof id !== 'string') || typeof password !== 'string') throw new Error('Login request is invalid.');
+        const kubeconfigs = await authenticateKubectlLoginClusters(clusterIds as string[], password);
+        sendJson(response, 200, updateClusterLoginKubeconfigs(kubeconfigs));
+      } catch (error) {
+        sendError(response, error, 400);
+      }
       return true;
     }
 
     const clusterRoute = url.pathname.match(/^\/api\/clusters\/([^/]+)$/);
     if (clusterRoute && request.method === 'PUT') {
       try {
-        sendJson(response, 200, updateCluster(pathPart(clusterRoute[1]), await readJson<ClusterInputDto>(request)));
+        const id = pathPart(clusterRoute[1]);
+        const input = await authenticateKubectlLoginInput(await readJson<ClusterInputDto>(request), id);
+        sendJson(response, 200, updateCluster(id, input));
       } catch (error) {
         sendError(response, error, 400);
       }
@@ -160,7 +177,9 @@ export async function handleApiRequest(
     }
     if (clusterRoute && request.method === 'DELETE') {
       try {
-        deleteCluster(pathPart(clusterRoute[1]));
+        const id = pathPart(clusterRoute[1]);
+        stopClusterProxy(id, 'cluster removed');
+        deleteCluster(id);
         response.statusCode = 204;
         response.end();
       } catch (error) {

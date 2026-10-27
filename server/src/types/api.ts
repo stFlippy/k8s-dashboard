@@ -1,4 +1,4 @@
-export type ClusterAuthType = 'kubeconfig' | 'token' | 'basic';
+export type ClusterAuthType = 'kubectl-login';
 
 export interface ClusterDto {
   id: string;
@@ -11,10 +11,7 @@ export interface ClusterDto {
   kubeconfigConfigured: boolean;
   server: string | null;
   username: string | null;
-  tokenMasked: string | null;
-  passwordMasked: string | null;
-  caConfigured: boolean;
-  skipTlsVerify: boolean;
+  loginRequired: boolean;
   secretsLocked: boolean;
 }
 
@@ -29,8 +26,6 @@ export interface ClusterInputDto {
   username?: string | null;
   token?: string | null;
   password?: string | null;
-  caData?: string | null;
-  skipTlsVerify?: boolean;
 }
 
 export interface NamespaceDto {
@@ -116,14 +111,18 @@ export interface PodDetailDto extends PodDto {
 
 export interface PodMetricContainerDto {
   name: string;
-  cpu: string;
-  memory: string;
+  cpu: { usageCores: number | null; requestCores: number | null; limitCores: number | null };
+  memory: { usageBytes: number | null; requestBytes: number | null; limitBytes: number | null };
+  cpuThrottlingPercent: number | null;
 }
 
 export interface PodMetricsDto {
   available: boolean;
   timestamp: string | null;
   window: string | null;
+  source: 'metrics-api' | 'kubelet' | null;
+  throttlingAvailable: boolean;
+  throttlingError?: string;
   containers: PodMetricContainerDto[];
   error?: string;
 }

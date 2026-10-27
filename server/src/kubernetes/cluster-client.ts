@@ -1,70 +1,18 @@
 import * as k8s from '@kubernetes/client-node';
-import { getDecryptedCredentials, getResolvedCluster } from '../clusters/store.ts';
+import { getResolvedCluster } from '../clusters/store.ts';
+import type { ResolvedCluster } from '../clusters/types.ts';
+import { getProxyKubeConfig } from './kubectl-proxy.ts';
 
-function normalizeCaData(value: string | undefined): string | undefined {
-  if (!value) return undefined;
-  if (value.includes('BEGIN CERTIFICATE')) return Buffer.from(value, 'utf8').toString('base64');
-  return value.replace(/\s+/g, '');
+export async function getKubeConfigForCluster(cluster: ResolvedCluster): Promise<k8s.KubeConfig> {
+  return getProxyKubeConfig(cluster);
 }
 
-export function getKubeConfigForCluster(cluster: import('../clusters/types.ts').ResolvedCluster): k8s.KubeConfig {
-  const kc = new k8s.KubeConfig();
-
-  if (cluster.authType === 'kubeconfig') {
-    const source = new k8s.KubeConfig();
-    const kubeconfig = getDecryptedCredentials(cluster).kubeconfig;
-    if (kubeconfig) source.loadFromString(kubeconfig);
-    else if (cluster.kubeconfigPath) source.loadFromFile(cluster.kubeconfigPath);
-    else throw new Error(`Kubeconfig is not configured for '${cluster.name}'.`);
-    if (cluster.context) source.setCurrentContext(cluster.context);
-
-    // Isolate cluster/user names per dashboard entry. The client library caches
-    // some credentials by kubeconfig username, so unique names reduce collisions
-    // when several kubeconfigs use generic user names such as "admin".
-    const sourceCluster = source.getCurrentCluster();
-    if (!sourceCluster) throw new Error(`No active cluster in kubeconfig for '${cluster.name}'.`);
-    const sourceUser = source.getCurrentUser();
-    const clusterName = `cluster-${cluster.id}`;
-    const userName = `user-${cluster.id}`;
-    const contextName = `context-${cluster.id}`;
-
-    kc.loadFromOptions({
-      clusters: [{ ...sourceCluster, name: clusterName }],
-      users: [{ ...(sourceUser ?? {}), name: userName }],
-      contexts: [{ name: contextName, cluster: clusterName, user: userName }],
-      currentContext: contextName
-    });
-    return kc;
-  }
-
-  const credentials = getDecryptedCredentials(cluster);
-  const clusterName = `cluster-${cluster.id}`;
-  const userName = `user-${cluster.id}`;
-  const contextName = `context-${cluster.id}`;
-
-  kc.loadFromOptions({
-    clusters: [{
-      name: clusterName,
-      server: cluster.server!,
-      caData: normalizeCaData(cluster.caData),
-      skipTLSVerify: cluster.skipTlsVerify
-    }],
-    users: [{
-      name: userName,
-      token: cluster.authType === 'token' ? credentials.token : undefined,
-      username: cluster.authType === 'basic' ? cluster.username : undefined,
-      password: cluster.authType === 'basic' ? credentials.password : undefined
-    }],
-    contexts: [{ name: contextName, cluster: clusterName, user: userName }],
-    currentContext: contextName
-  });
-  return kc;
+export async function getClusterKubeConfig(clusterId: string): Promise<k8s.KubeConfig> {
+  return getKubeConfigForCluster(getResolvedCluster(clusterId));
 }
 
-export function getClusterKubeConfig(clusterId: string): k8s.KubeConfig { return getKubeConfigForCluster(getResolvedCluster(clusterId)); }
-
-export function getClusterClients(clusterId: string) {
-  const kubeConfig = getClusterKubeConfig(clusterId);
+export async function getClusterClients(clusterId: string) {
+  const kubeConfig = await getClusterKubeConfig(clusterId);
   return {
     kubeConfig,
     coreApi: kubeConfig.makeApiClient(k8s.CoreV1Api),

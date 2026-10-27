@@ -8,13 +8,18 @@
     "dev:client": "npm --prefix client run dev",
     "dev:server": "npm --prefix server run dev",
     "build": "npm --prefix client run build && npm --prefix server run build",
+    "build:standalone": "node scripts/build-standalone.mjs",
     "start": "npm --prefix server run start",
     "typecheck": "npm --prefix client run typecheck && npm --prefix server run typecheck",
     "install:all": "npm install --prefix client && npm install --prefix server",
     "check": "node scripts/check-project.mjs && npm run typecheck"
   },
   "engines": {
-    "node": ">=22.12.0",
+    "node": ">=22.20.0",
     "npm": ">=10"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "postject": "^1.0.0-alpha.6"
   }
 }

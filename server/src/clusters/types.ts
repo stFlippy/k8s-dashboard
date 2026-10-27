@@ -11,10 +11,6 @@ export interface StoredCluster {
   context?: string;
   server?: string;
   username?: string;
-  encryptedToken?: string;
-  encryptedPassword?: string;
-  caData?: string;
-  skipTlsVerify: boolean;
   createdAt: string;
   updatedAt: string;
 }

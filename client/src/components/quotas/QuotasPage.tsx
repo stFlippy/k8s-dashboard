@@ -4,6 +4,7 @@ import type { UseQueryResult } from '@tanstack/react-query';
 import { getResourceQuotas } from '../../api/kubernetes';
 import { useClusterNamespaces } from '../../hooks/useClusterNamespaces';
 import styles from './QuotasPage.module.css';
+import { isClusterAuthorizationError } from '../../api/client';
 
 function quantityNumber(value: string): number | null {
   const match = value.trim().match(/^([+-]?(?:\d+(?:\.\d*)?|\.\d+))(?:([eE][+-]?\d+)|([numkKMGTEP]|[KMGTPE]i))?$/);
@@ -53,7 +54,7 @@ export function QuotasPage() {
   if (clustersError) return <div className={styles.error}>{clustersError.message}</div>;
 
   const hasQuotas = sections.some((section) => section.namespaces.some((namespace) => namespace.quotas.length > 0));
-  const quotaErrors = sections.flatMap((section) => section.namespaces.filter((namespace) => namespace.error).map((namespace) => `${section.cluster.name}/${namespace.namespace}: ${namespace.error?.message}`));
+  const quotaErrors = sections.flatMap((section) => section.namespaces.filter((namespace) => namespace.error && !isClusterAuthorizationError(namespace.error)).map((namespace) => `${section.cluster.name}/${namespace.namespace}: ${namespace.error?.message}`));
   const quotasLoading = quotaQueries.some((query) => query.isLoading);
 
   return (
@@ -70,12 +71,15 @@ export function QuotasPage() {
             </div>
             {section.namespaces.map((namespace) => namespace.quotas.map((quota) => {
               const keys = [...new Set([...Object.keys(quota.hard), ...Object.keys(quota.used)])].sort();
+              const countedPods = quantityNumber(quota.used.pods ?? '0');
+              const namespaceHasNoCountedPods = 'pods' in quota.hard && countedPods === 0;
               return (
                 <article className={styles.card} key={`${namespace.namespace}/${quota.name}`}>
                   <div className={styles.cardHeader}>
                     <div><h3>{quota.name}</h3><span>{namespace.namespace}</span></div>
-                    <small>Жёсткие лимиты</small>
+                    <small>Источник: ResourceQuota.status · использовано / лимит</small>
                   </div>
+                  {namespaceHasNoCountedPods && <div className={styles.zeroNotice}>Kubernetes сообщает 0 учитываемых Pod в этом Namespace. Workload из другого Namespace эту квоту не расходует.</div>}
                   <div className={styles.cardBody}>
                     {keys.map((key) => {
                       const hard = quota.hard[key] ?? '—';

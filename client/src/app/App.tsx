@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { queryClient } from './queryClient';
 import { Matrix } from '../components/matrix/Matrix';
 import { QuotasPage } from '../components/quotas/QuotasPage';
 import { ConfigMapsPage } from '../components/configmaps/ConfigMapsPage';
 import { ClusterPanel } from '../components/clusters/ClusterPanel';
+import { ClusterLoginModal } from '../components/clusters/ClusterLoginModal';
 import { DeploymentPage } from '../components/deployment/DeploymentPage';
 import { PodPanel } from '../components/pod/PodPanel';
 import { ClusterHealthPage } from '../components/health/ClusterHealthPage';
@@ -13,7 +14,7 @@ import type { PodRef, WorkloadRef } from '../types/kubernetes';
 import './App.css';
 import { AuthScreen } from '../components/auth/AuthScreen';
 import { getCurrentUser, getPreferences, logout, savePreferences } from '../api/auth';
-import { setCsrfToken } from '../api/client';
+import { clusterAuthorizationEvent, setCsrfToken } from '../api/client';
 import type { UserAccount } from '../types/kubernetes';
 
 type View = 'pods' | 'quotas' | 'configmaps' | 'health';
@@ -27,8 +28,26 @@ function Shell({ user, onLoggedOut }: { user: UserAccount; onLoggedOut: () => vo
   const [clustersOpen, setClustersOpen] = useState(false);
   const [deployment, setDeployment] = useState<WorkloadRef | null>(null);
   const [pod, setPod] = useState<PodRef | null>(null);
+  const [unauthorizedClusterIds, setUnauthorizedClusterIds] = useState<string[]>([]);
+  const [dismissedLoginSignature, setDismissedLoginSignature] = useState('');
   const clustersQuery = useClusters();
   const enabled = (clustersQuery.data ?? []).filter((cluster) => cluster.enabled).length;
+  const loginClusters = (clustersQuery.data ?? []).filter((cluster) => cluster.enabled && cluster.authType === 'kubectl-login' && (cluster.loginRequired || unauthorizedClusterIds.includes(cluster.id)));
+  const loginSignature = loginClusters.map((cluster) => cluster.id).sort().join(',');
+  const markClustersUnauthorized = useCallback((ids: string[]) => {
+    setUnauthorizedClusterIds((current) => {
+      const next = [...new Set([...current, ...ids])];
+      return next.length === current.length ? current : next;
+    });
+  }, []);
+  useEffect(() => {
+    const requireAuthorization = (event: Event) => {
+      const clusterId = (event as CustomEvent<string>).detail;
+      if (clusterId) markClustersUnauthorized([clusterId]);
+    };
+    window.addEventListener(clusterAuthorizationEvent, requireAuthorization);
+    return () => window.removeEventListener(clusterAuthorizationEvent, requireAuthorization);
+  }, [markClustersUnauthorized]);
 
   const switchView = (next: View) => {
     setDeployment(null);
@@ -65,7 +84,7 @@ function Shell({ user, onLoggedOut }: { user: UserAccount; onLoggedOut: () => vo
       </header>
 
       <main className="content">
-        {view === 'pods' && <Matrix onOpenDeployment={setDeployment} onOpenPod={setPod} />}
+        {view === 'pods' && <Matrix onOpenDeployment={setDeployment} onOpenPod={setPod} onClustersUnauthorized={markClustersUnauthorized} />}
         {view === 'pods' && deployment && <DeploymentPage workload={deployment} onOpenPod={setPod} onClose={() => setDeployment(null)} />}
         {view === 'quotas' && <QuotasPage />}
         {view === 'configmaps' && <ConfigMapsPage />}
@@ -74,6 +93,11 @@ function Shell({ user, onLoggedOut }: { user: UserAccount; onLoggedOut: () => vo
 
       <ClusterPanel open={clustersOpen} onClose={() => setClustersOpen(false)} onLogout={() => { void logout().finally(() => { setCsrfToken(''); onLoggedOut(); }); }} />
       <PodPanel pod={pod} onClose={() => setPod(null)} />
+      {loginClusters.length > 0 && loginSignature !== dismissedLoginSignature && <ClusterLoginModal
+        clusters={loginClusters}
+        onClose={() => setDismissedLoginSignature(loginSignature)}
+        onAuthenticated={(ids) => { setUnauthorizedClusterIds((current) => current.filter((id) => !ids.includes(id))); setDismissedLoginSignature(''); }}
+      />}
     </div>
   );
 }

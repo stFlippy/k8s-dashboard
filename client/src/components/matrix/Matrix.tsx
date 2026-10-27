@@ -9,10 +9,12 @@ import { ActionConfirmModal } from '../common/ActionConfirmModal';
 import type { ActionConfirmRequest } from '../common/ActionConfirmModal';
 import styles from './Matrix.module.css';
 import { clusterAlias, readClusterAliases } from '../../utils/clusterAliases';
+import { createLocalId } from '../../utils/localId';
 
 interface Props {
   onOpenDeployment: (workload: WorkloadRef) => void;
   onOpenPod: (pod: PodRef) => void;
+  onClustersUnauthorized?: (clusterIds: string[]) => void;
 }
 
 interface Column {
@@ -165,7 +167,7 @@ function recentTime(value: string | null): string | null {
   });
 }
 
-export function Matrix({ onOpenDeployment, onOpenPod }: Props) {
+export function Matrix({ onOpenDeployment, onOpenPod, onClustersUnauthorized }: Props) {
   const queryClient = useQueryClient();
   const { clustersLoading, clustersError, groups } = useClusterNamespaces();
   const [search, setSearch] = useState('');
@@ -397,7 +399,18 @@ export function Matrix({ onOpenDeployment, onOpenPod }: Props) {
   });
 
   const namespaceErrors = groups.filter((group) => group.error);
-  const namespaceErrorText = namespaceErrors.map((group) => `${group.cluster.name}: ${group.error?.message}`).join(' · ');
+  const unauthorizedClusterIds = namespaceErrors
+    .filter((group) => group.cluster.authType === 'kubectl-login' && /(?:HTTP-Code:\s*401|\b401\b|Unauthorized)/i.test(group.error?.message ?? ''))
+    .map((group) => group.cluster.id)
+    .sort();
+  const unauthorizedSignature = unauthorizedClusterIds.join(',');
+  useEffect(() => {
+    if (unauthorizedClusterIds.length) onClustersUnauthorized?.(unauthorizedClusterIds);
+  }, [onClustersUnauthorized, unauthorizedSignature]);
+  const namespaceErrorText = namespaceErrors
+    .filter((group) => !unauthorizedClusterIds.includes(group.cluster.id))
+    .map((group) => `${group.cluster.name}: ${group.error?.message}`)
+    .join(' · ');
   if (clustersLoading) return <div className={styles.state}>Загрузка кластеров Kubernetes…</div>;
   if (clustersError) return <div className={styles.stateError}>Не удалось загрузить кластеры: {clustersError.message}</div>;
 
@@ -471,7 +484,7 @@ export function Matrix({ onOpenDeployment, onOpenPod }: Props) {
     if (!name) { setViewEditor({ ...viewEditor, error: 'Введите название вкладки.' }); return; }
     if (views.some((view) => view.id !== viewEditor.viewId && view.name.toLocaleLowerCase() === name.toLocaleLowerCase())) { setViewEditor({ ...viewEditor, error: `Вкладка «${name}» уже существует.` }); return; }
     if (viewEditor.mode === 'rename' && viewEditor.viewId) setViews((items) => items.map((item) => item.id === viewEditor.viewId ? { ...item, name } : item));
-    else { const view: MatrixView = { id: crypto.randomUUID(), name, filters: { ...filters }, recentRestartFilter, problemOnly, hideFilteredNamespaces, selectedDeployments, selectedNamespaces, selectedClusterIds: selectedClusters, namespaceOrder: [...namespaceOrder], deploymentOrder: [...deploymentOrder] }; setViews((current) => [...current, view]); applyView(view); }
+    else { const view: MatrixView = { id: createLocalId(), name, filters: { ...filters }, recentRestartFilter, problemOnly, hideFilteredNamespaces, selectedDeployments, selectedNamespaces, selectedClusterIds: selectedClusters, namespaceOrder: [...namespaceOrder], deploymentOrder: [...deploymentOrder] }; setViews((current) => [...current, view]); applyView(view); }
     setViewMessage(''); setViewEditor(null);
   };
   const requestRemoveView = (viewId: string) => { const current = views.find((view) => view.id === viewId); if (!current || views.length <= 1) return; setTabMenu(null); setConfirmRequest({ title: 'Удаление вкладки', description: `Вкладка «${current.name}» и сохранённые в ней фильтры и порядок элементов будут удалены.`, confirmLabel: 'Удалить вкладку', onConfirm: () => { const next = views.filter((view) => view.id !== viewId); setViews(next); if (activeViewId === viewId) applyView(next[0]); } }); };
@@ -493,7 +506,7 @@ export function Matrix({ onOpenDeployment, onOpenPod }: Props) {
       const importedNames = payload.views.map((view) => view.name?.trim()).filter(Boolean) as string[]; const normalized = importedNames.map((name) => name.toLocaleLowerCase());
       if (importedNames.length !== payload.views.length || new Set(normalized).size !== normalized.length) throw new Error('В импортируемом файле есть пустые или одинаковые имена вкладок.');
       const duplicate = importedNames.find((name) => views.some((view) => view.name.toLocaleLowerCase() === name.toLocaleLowerCase())); if (duplicate) throw new Error(`Вкладка «${duplicate}» уже существует.`);
-      const imported = payload.views.map((view) => ({ ...view, id: crypto.randomUUID(), name: view.name.trim(), namespaceOrder: (view.namespaceOrder ?? []).filter((key) => available.has(key.split('/')[0])), deploymentOrder: view.deploymentOrder ?? [] }));
+      const imported = payload.views.map((view) => ({ ...view, id: createLocalId(), name: view.name.trim(), namespaceOrder: (view.namespaceOrder ?? []).filter((key) => available.has(key.split('/')[0])), deploymentOrder: view.deploymentOrder ?? [] }));
       setViews((current) => [...current, ...imported]); applyView(imported[0]); setViewMessage(`Импортировано вкладок: ${imported.length}.`);
     } catch (error) { setViewMessage(`Импорт не выполнен: ${error instanceof Error ? error.message : 'не удалось прочитать вкладки.'}`); }
   };
@@ -740,7 +753,7 @@ export function Matrix({ onOpenDeployment, onOpenPod }: Props) {
         </div>
       )}
 
-      {tabMenu && (() => { const view = views.find((item) => item.id === tabMenu.viewId); return view ? <div className={styles.tabContextMenu} style={{ left: tabMenu.x, top: tabMenu.y }} onClick={(event) => event.stopPropagation()}><button type="button" onClick={() => renameView(view.id)}>Переименовать</button><button type="button" onClick={() => { exportViews([view]); setTabMenu(null); }}>Экспортировать</button><div className={styles.colorMenu}><span>Цвет фона</span><div>{['transparent','#3b82f6','#10a87c','#d89516','#8b5cf6','#dc2626'].map((color) => <button key={color} aria-label={color === 'transparent' ? 'Без цвета' : `Цвет ${color}`} title={color === 'transparent' ? 'Без цвета' : color} style={{ background: color === 'transparent' ? 'var(--bg-input)' : color }} onClick={() => { setViews((items) => items.map((item) => item.id === view.id ? { ...item, color } : item)); setTabMenu(null); }} />)}</div></div><hr /><button type="button" className={styles.contextDanger} disabled={views.length <= 1} onClick={() => requestRemoveView(view.id)}>Удалить</button></div> : null; })()}
+      {tabMenu && (() => { const view = views.find((item) => item.id === tabMenu.viewId); return view ? <div className={styles.tabContextMenu} style={{ left: tabMenu.x, top: tabMenu.y }} onClick={(event) => event.stopPropagation()}><button type="button" onClick={() => renameView(view.id)}>Переименовать</button><button type="button" onClick={() => { exportViews([view]); setTabMenu(null); }}>Экспортировать</button><div className={styles.colorMenu}><span>Цвет фона</span><div>{['transparent','#3b82f6','#10a87c','#d89516','#8b5cf6','#dc2626','#e2558f'].map((color) => <button key={color} aria-label={color === 'transparent' ? 'Без цвета' : `Цвет ${color}`} title={color === 'transparent' ? 'Без цвета' : color} style={{ background: color === 'transparent' ? 'var(--bg-input)' : color }} onClick={() => { setViews((items) => items.map((item) => item.id === view.id ? { ...item, color } : item)); setTabMenu(null); }} />)}</div></div><hr /><button type="button" className={styles.contextDanger} disabled={views.length <= 1} onClick={() => requestRemoveView(view.id)}>Удалить</button></div> : null; })()}
 
       {deploymentChoices && <div className={styles.choiceOverlay} onMouseDown={(event) => event.target === event.currentTarget && setDeploymentChoices(null)}><div className={styles.choiceModal}><div className={styles.choiceHeader}><div><h3>{deploymentChoices.name}</h3><span>Выберите точное расположение deployment</span></div><button onClick={() => setDeploymentChoices(null)} aria-label="Закрыть">×</button></div><div className={styles.choiceList}>{deploymentChoices.columns.map((column) => <button key={`${column.clusterId}/${column.namespace}`} onClick={() => { openDeployment(column, deploymentChoices.name); setDeploymentChoices(null); }}><b>{column.namespace}</b><span>{column.clusterName} / {column.namespace}</span></button>)}</div></div></div>}
 

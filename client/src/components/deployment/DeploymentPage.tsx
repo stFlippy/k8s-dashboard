@@ -42,7 +42,7 @@ function quantityNumber(value: string | null): number | null {
 
 function resourcePercent(metrics: PodMetrics | undefined, containers: DeploymentContainer[], resource: 'cpu' | 'memory'): number | null {
   if (!metrics?.available) return null; let used = 0; let limit = 0;
-  for (const metric of metrics.containers) { const usage = quantityNumber(metric[resource]); const spec = containers.find((item) => item.name === metric.name); const maximum = quantityNumber(resource === 'cpu' ? spec?.cpuLimit ?? null : spec?.memoryLimit ?? null); if (usage !== null && maximum !== null) { used += usage; limit += maximum; } }
+  for (const metric of metrics.containers) { const usage = resource === 'cpu' ? metric.cpu.usageCores : metric.memory.usageBytes; const spec = containers.find((item) => item.name === metric.name); const maximum = resource === 'cpu' ? metric.cpu.limitCores ?? quantityNumber(spec?.cpuLimit ?? null) : metric.memory.limitBytes ?? quantityNumber(spec?.memoryLimit ?? null); if (usage !== null && maximum !== null) { used += usage; limit += maximum; } }
   return limit > 0 ? Math.max(0, (used / limit) * 100) : null;
 }
 

@@ -3,7 +3,7 @@ import { getClusterClients } from './cluster-client.ts';
 import type { NamespaceDto } from '../types/api.ts';
 
 export async function listNamespaces(clusterId: string): Promise<NamespaceDto[]> {
-  const { coreApi } = getClusterClients(clusterId);
+  const { coreApi } = await getClusterClients(clusterId);
   const response = await coreApi.listNamespace();
   return response.items
     .map((item: k8s.V1Namespace) => ({

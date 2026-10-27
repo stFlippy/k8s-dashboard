@@ -27,6 +27,7 @@ export const updateCluster = (id: string, input: ClusterInput) => apiSend<Cluste
 export const deleteCluster = (id: string) => apiDelete(`/api/clusters/${q(id)}`);
 export const testCluster = (id: string) => apiSend<ClusterTestResult>(`/api/clusters/${q(id)}/test`, 'POST', {});
 export const testClusterInput = (input: ClusterInput, existingId?: string) => apiSend<ClusterTestResult>('/api/clusters/test-input', 'POST', { input, existingId });
+export const loginClusters = (clusterIds: string[], password: string) => apiSend<Cluster[]>('/api/clusters/login', 'POST', { clusterIds, password });
 
 export const getNamespaces = (clusterId: string) => apiGet<Namespace[]>(`/api/namespaces?${scope(clusterId)}`);
 export const getClusterHealth = (clusterId: string) => apiGet<ClusterHealth>(`/api/cluster-health?${scope(clusterId)}`);

@@ -7,7 +7,7 @@ function quantities(source: Record<string, unknown> | undefined): Record<string,
 }
 
 export async function listResourceQuotas(clusterId: string, namespace: string): Promise<ResourceQuotaDto[]> {
-  const { coreApi } = getClusterClients(clusterId);
+  const { coreApi } = await getClusterClients(clusterId);
   const response = await coreApi.listNamespacedResourceQuota({ namespace });
   return response.items.map((item: k8s.V1ResourceQuota) => ({
     name: item.metadata?.name ?? 'unknown',

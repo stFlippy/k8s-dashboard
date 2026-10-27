@@ -9,6 +9,7 @@
 .card:last-child { border-radius:0 0 var(--radius-lg) var(--radius-lg); }
 .cardHeader { padding:12px 16px; display:flex; justify-content:space-between; align-items:center; background:var(--bg-card); border-bottom:1px solid var(--border-color); }
 .cardHeader h3 { margin:0; font-size:15px; }.cardHeader span { display:block; margin-top:3px; color:var(--text-muted); font-size:13px; }.cardHeader small { color:var(--text-muted); }
+.zeroNotice { padding:8px 16px; border-bottom:1px solid var(--border-color); background:color-mix(in srgb,var(--warning) 8%,var(--bg-input)); color:var(--text-secondary); font-size:12px; }
 .cardBody { padding:13px 16px; }
 .quotaRow { display:flex; align-items:center; gap:12px; min-height:30px; }
 .label { width:180px; flex:0 0 180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-secondary); font-size:13px; }

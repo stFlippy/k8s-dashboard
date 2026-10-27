@@ -1,5 +1,7 @@
 node_modules/
 dist/
+release/
+.build/
 .env
 .env.local
 *.log
@@ -9,4 +11,7 @@ server/data/clusters.json
 server/data/clusters.json.tmp
 server/data/users.sqlite*
 server/data/bootstrap-user.json
-tmp.txt
+*.txt
+temp/
+addons/hosts.cfg
+addons/*.csv

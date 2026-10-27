@@ -30,7 +30,7 @@
 .actions button, .formActions button, .sectionHeader button { padding: 6px 10px; border: 1px solid var(--border-color); border-radius: var(--radius); background: var(--control-bg); color: var(--text-primary); cursor: pointer; font-size: 13px; }
 .actions button:hover, .formActions button:hover, .sectionHeader button:hover { background: var(--bg-hover); }
 .actions .danger { color: var(--error); border-color: rgba(239,68,68,.35); }
-.formCard { margin-top: 14px; display: grid; grid-template-columns: 1fr 1fr; gap: 11px 12px; }
+.formCard { display: grid; grid-template-columns: 1fr 1fr; gap: 11px 12px; }
 .formTitle { grid-column: 1 / -1; font-size: 15px; font-weight: 600; margin-bottom: 2px; }
 .formCard label { display: flex; flex-direction: column; gap: 5px; color: var(--text-secondary); font-size: 13px; }
 .formCard input, .formCard select, .formCard textarea { width: 100%; border: 1px solid var(--border-color); border-radius: var(--radius); background: var(--control-input); color: var(--text-primary); padding: 8px 9px; outline: none; font-size: 13px; }
