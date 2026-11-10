@@ -76,7 +76,7 @@ export function DeploymentPage({ workload, onOpenPod, onClose }: Props) {
     refetchInterval: 10_000,
     refetchOnWindowFocus: true
   });
-  const deploymentPods = useMemo(() => (pods.data ?? []).filter((pod) => pod.name.startsWith(`${workload.deploymentName}-`)), [pods.data, workload.deploymentName]);
+  const deploymentPods = useMemo(() => (pods.data ?? []).filter((pod) => Boolean(detail.data?.uid) && pod.ownerDeploymentUid === detail.data?.uid), [pods.data, detail.data?.uid]);
   const podMetrics = useQueries({ queries: deploymentPods.map((pod) => ({ queryKey: ['pod-metrics', workload.clusterId, workload.namespace, pod.name], queryFn: () => getPodMetrics(workload.clusterId, workload.namespace, pod.name), refetchInterval: 5_000 })) }) as UseQueryResult<PodMetrics, Error>[];
   const [replicas, setReplicas] = useState(0);
   const [resourceText, setResourceText] = useState('');
@@ -96,18 +96,11 @@ export function DeploymentPage({ workload, onOpenPod, onClose }: Props) {
     ]);
   };
 
-  const scale = useMutation({ mutationFn: (value: number) => setDeploymentReplicas(workload.clusterId, workload.namespace, workload.deploymentName, value), onSuccess: refresh });
-  const restart = useMutation({ mutationFn: () => restartDeployment(workload.clusterId, workload.namespace, workload.deploymentName), onSuccess: refresh });
+  useEffect(() => { setConfirmRequest(null); }, [workload.clusterId, workload.namespace, workload.deploymentName]);
+  const scale = useMutation({ mutationFn: (value: { clusterId: string; namespace: string; name: string; replicas: number }) => setDeploymentReplicas(value.clusterId, value.namespace, value.name, value.replicas), onSuccess: refresh });
+  const restart = useMutation({ mutationFn: (value: { clusterId: string; namespace: string; name: string }) => restartDeployment(value.clusterId, value.namespace, value.name), onSuccess: refresh });
   const replace = useMutation({
-    mutationFn: async () => {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(resourceText);
-      } catch {
-        throw new Error('Редактор использует JSON-синтаксис. Не удалось распознать JSON.');
-      }
-      return replaceDeploymentResource(workload.clusterId, workload.namespace, workload.deploymentName, parsed);
-    },
+    mutationFn: (value: { clusterId: string; namespace: string; name: string; resource: unknown }) => replaceDeploymentResource(value.clusterId, value.namespace, value.name, value.resource),
     onSuccess: async () => {
       setMessage('Ресурс deployment сохранён.');
       await refresh();
@@ -134,7 +127,7 @@ export function DeploymentPage({ workload, onOpenPod, onClose }: Props) {
             confirmLabel: 'Выполнить reload pods',
             target: confirmationTarget,
             onConfirm: async () => {
-              await restart.mutateAsync();
+              await restart.mutateAsync({ clusterId: workload.clusterId, namespace: workload.namespace, name: data.name });
               setMessage('Запрошен rolling restart Pods.');
             }
           })}>Reload pods</button>
@@ -160,16 +153,19 @@ export function DeploymentPage({ workload, onOpenPod, onClose }: Props) {
             <button
               className={styles.apply}
               disabled={replicas === data.replicas || scale.isPending}
-              onClick={() => setConfirmRequest({
+              onClick={() => {
+                const target = { clusterId: workload.clusterId, namespace: workload.namespace, name: data.name, replicas };
+                setConfirmRequest({
                 title: 'Изменение количества реплик',
-                description: `Количество реплик для ${data.name} изменится с ${data.replicas} до ${replicas}.`,
+                description: `Количество реплик для ${data.name} изменится с ${data.replicas} до ${target.replicas}.${target.replicas === 0 ? ' Workload будет остановлен: все его Pods завершатся.' : ''}`,
                 confirmLabel: 'Изменить реплики',
                 target: confirmationTarget,
                 onConfirm: async () => {
-                  await scale.mutateAsync(replicas);
-                  setMessage(`Количество реплик изменено: ${replicas}.`);
+                  await scale.mutateAsync(target);
+                  setMessage(`Количество реплик изменено: ${target.replicas}.`);
                 }
-              })}
+              });
+              }}
             >Применить</button>
           </div>
         </div>
@@ -215,7 +211,12 @@ export function DeploymentPage({ workload, onOpenPod, onClose }: Props) {
         </div>
       </section>
 
-      {yamlOpen && <div className={styles.yamlModalOverlay} onMouseDown={(event) => event.target === event.currentTarget && setYamlOpen(false)}><div className={styles.yamlModal}><div className={styles.modalHeader}><h2>YAML — {data.name}</h2><div><button className={styles.primary} onClick={() => setConfirmRequest({ title: 'Сохранение YAML', description: `Изменения YAML для deployment ${data.name} будут отправлены в кластер.`, confirmLabel: 'Сохранить YAML', target: confirmationTarget, onConfirm: async () => { await replace.mutateAsync(); setYamlOpen(false); } })}>Сохранить</button><button className={styles.modalClose} onClick={() => setYamlOpen(false)} aria-label="Закрыть" title="Закрыть">×</button></div></div><div className={styles.yamlModalBody}><CodeEditor value={resourceText} onChange={setResourceText} /></div></div></div>}
+      {yamlOpen && <div className={styles.yamlModalOverlay} onMouseDown={(event) => event.target === event.currentTarget && setYamlOpen(false)}><div className={styles.yamlModal}><div className={styles.modalHeader}><h2>YAML — {data.name}</h2><div><button className={styles.primary} onClick={() => {
+        let resource: unknown;
+        try { resource = JSON.parse(resourceText); } catch { setMessage('Не удалось распознать JSON документа Deployment.'); return; }
+        const target = { clusterId: workload.clusterId, namespace: workload.namespace, name: data.name, resource };
+        setConfirmRequest({ title: 'Сохранение YAML', description: `Изменения YAML для deployment ${data.name} будут отправлены в кластер. Изменение Pod template может вызвать rollout Pods.`, confirmLabel: 'Сохранить YAML', target: confirmationTarget, onConfirm: async () => { await replace.mutateAsync(target); setYamlOpen(false); } });
+      }}>Сохранить</button><button className={styles.modalClose} onClick={() => setYamlOpen(false)} aria-label="Закрыть" title="Закрыть">×</button></div></div><div className={styles.yamlModalBody}><CodeEditor value={resourceText} onChange={setResourceText} /></div></div></div>}
 
       <ActionConfirmModal request={confirmRequest} onClose={() => setConfirmRequest(null)} />
     </aside></>

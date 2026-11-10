@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { ClusterInputDto } from '../types/api.ts';
+import type { AuthenticatedClusterInput, ClusterInputDto } from '../types/api.ts';
 import { getOwnedClusterSettings } from '../clusters/store.ts';
 import { runtimeFile } from '../config/runtime.ts';
 import { logExternalCommandFailure } from '../logging/logger.ts';
@@ -71,13 +71,23 @@ export async function runLogin(server: string, username: string, password: strin
   });
 }
 
-export async function authenticateKubectlLoginInput(input: ClusterInputDto, existingId?: string): Promise<ClusterInputDto> {
+export async function authenticateKubectlLoginInput(input: ClusterInputDto, existingId?: string): Promise<AuthenticatedClusterInput> {
   if (input.authType !== 'kubectl-login') throw new Error('Only kubectl login through the per-user proxy is supported.');
-  if (!input.password) return input;
+  const submitted = input as ClusterInputDto & Record<string, unknown>;
+  if (submitted.kubeconfigData !== undefined || submitted.token !== undefined || submitted.kubeconfigPath !== undefined || submitted.context !== undefined) {
+    throw new Error('Credentials must be obtained through kubectl login.');
+  }
   const existing = existingId ? getOwnedClusterSettings(existingId) : undefined;
   const server = input.server?.trim() || existing?.server;
   const username = input.username?.trim() || existing?.username;
   if (!server || !username) throw new Error('API server and username are required for kubectl login.');
+  if (!input.password) {
+    if (!existing) throw new Error('Password is required for a new cluster.');
+    if (server.replace(/\/$/, '') !== existing.server || username !== existing.username) {
+      throw new Error('Changing API server or username requires a new kubectl login and password.');
+    }
+    return input;
+  }
 
   const temporaryDirectory = mkdtempSync(join(tmpdir(), 'quaber-login-'));
   const kubeconfigPath = join(temporaryDirectory, '.kube', 'config');
@@ -90,7 +100,7 @@ export async function authenticateKubectlLoginInput(input: ClusterInputDto, exis
   try {
     mkdirSync(join(temporaryDirectory, '.kube'), { mode: 0o700 });
     const kubeconfigData = await runLogin(server, username, input.password, kubeconfigPath, helperEnvironment);
-    return { ...input, username, kubeconfigData, token: undefined, password: undefined };
+    return { ...input, username, kubeconfigData, password: undefined };
   } finally {
     rmSync(temporaryDirectory, { recursive: true, force: true });
   }

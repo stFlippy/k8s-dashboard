@@ -8,7 +8,6 @@ import { ClusterPanel } from '../components/clusters/ClusterPanel';
 import { ClusterLoginModal } from '../components/clusters/ClusterLoginModal';
 import { DeploymentPage } from '../components/deployment/DeploymentPage';
 import { PodPanel } from '../components/pod/PodPanel';
-import { ClusterHealthPage } from '../components/health/ClusterHealthPage';
 import { useClusters } from '../hooks/useKubernetes';
 import type { PodRef, WorkloadRef } from '../types/kubernetes';
 import './App.css';
@@ -17,7 +16,7 @@ import { getCurrentUser, getPreferences, logout, savePreferences } from '../api/
 import { clusterAuthorizationEvent, setCsrfToken } from '../api/client';
 import type { UserAccount } from '../types/kubernetes';
 
-type View = 'pods' | 'quotas' | 'configmaps' | 'health';
+type View = 'pods' | 'quotas' | 'configmaps';
 
 function NotFoundPage() {
   return <main className="not-found"><div><strong>404</strong><h1>Страница не найдена</h1><p>Такого адреса в Quaber нет.</p><button onClick={() => window.location.assign('/')}>На главную</button></div></main>;
@@ -64,17 +63,17 @@ function Shell({ user, onLoggedOut }: { user: UserAccount; onLoggedOut: () => vo
   return (
     <div className="app">
       <header className="top-nav">
-        <button className="brand" onClick={openHome} aria-label="Открыть главную страницу Quaber">
-          <img src="/logo.png" alt="Quaber" />
-          <span>Quaber</span>
-        </button>
-
+        <div className="nav-start">
+          <button className="brand" onClick={openHome} aria-label="Открыть главную страницу Quaber">
+            <img src="/logo.png" alt="Quaber" />
+            <span>Quaber</span>
+          </button>
+        </div>
 
         <nav className="nav-tabs" aria-label="Основная навигация">
           <button className={`nav-tab ${view === 'pods' ? 'active' : ''}`} onClick={() => switchView('pods')}>Pod list</button>
           <button className={`nav-tab ${view === 'quotas' ? 'active' : ''}`} onClick={() => switchView('quotas')}>Квоты ресурсов</button>
           <button className={`nav-tab ${view === 'configmaps' ? 'active' : ''}`} onClick={() => switchView('configmaps')}>ConfigMaps</button>
-          <button className={`nav-tab ${view === 'health' ? 'active' : ''}`} onClick={() => switchView('health')}>Cluster Health</button>
         </nav>
 
         <button className="user-menu" onClick={() => setClustersOpen(true)}>
@@ -88,11 +87,10 @@ function Shell({ user, onLoggedOut }: { user: UserAccount; onLoggedOut: () => vo
         {view === 'pods' && deployment && <DeploymentPage workload={deployment} onOpenPod={setPod} onClose={() => setDeployment(null)} />}
         {view === 'quotas' && <QuotasPage />}
         {view === 'configmaps' && <ConfigMapsPage />}
-        {view === 'health' && <ClusterHealthPage />}
       </main>
 
-      <ClusterPanel open={clustersOpen} onClose={() => setClustersOpen(false)} onLogout={() => { void logout().finally(() => { setCsrfToken(''); onLoggedOut(); }); }} />
-      <PodPanel pod={pod} onClose={() => setPod(null)} />
+      <ClusterPanel open={clustersOpen} currentUser={user} onClose={() => setClustersOpen(false)} onLogout={() => { void logout().finally(() => { setCsrfToken(''); onLoggedOut(); }); }} />
+      {pod && <PodPanel key={`${pod.clusterId}/${pod.namespace}/${pod.podName}`} pod={pod} onSelectPod={setPod} onClose={() => setPod(null)} />}
       {loginClusters.length > 0 && loginSignature !== dismissedLoginSignature && <ClusterLoginModal
         clusters={loginClusters}
         onClose={() => setDismissedLoginSignature(loginSignature)}
@@ -108,17 +106,17 @@ export function App() {
   const [preferencesReady, setPreferencesReady] = useState(false);
   useEffect(() => { void getCurrentUser().then(setUser).catch(() => setUser(null)); }, []);
   useEffect(() => {
-    if (!user || user.mustChangePassword) { setPreferencesReady(false); return; }
+    if (!user) { setPreferencesReady(false); return; }
     let active = true;
     void getPreferences().then((preferences) => { if (!active) return; Object.keys(window.localStorage).filter((key) => key.startsWith('quaber.')).forEach((key) => window.localStorage.removeItem(key)); Object.entries(preferences).forEach(([key,value]) => { if (key.startsWith('quaber.') && typeof value === 'string') window.localStorage.setItem(key,value); }); setPreferencesReady(true); }).catch(() => setPreferencesReady(true));
     return () => { active=false; };
-  }, [user?.id, user?.mustChangePassword]);
+  }, [user?.id]);
   useEffect(() => {
-    if (!user || user.mustChangePassword || !preferencesReady) return;
+    if (!user || !preferencesReady) return;
     const persist=()=>{const values:Record<string,string>={};for(let index=0;index<window.localStorage.length;index++){const key=window.localStorage.key(index);if(key?.startsWith('quaber.'))values[key]=window.localStorage.getItem(key)??'';}void savePreferences(values).catch(()=>undefined);};
     const timer=window.setInterval(persist,3000);window.addEventListener('beforeunload',persist);return()=>{window.clearInterval(timer);window.removeEventListener('beforeunload',persist);persist();};
-  }, [preferencesReady,user?.id,user?.mustChangePassword]);
-  if (user === undefined || (user && !user.mustChangePassword && !preferencesReady)) return <div className="auth-loading">Загрузка настроек пользователя…</div>;
-  if (!user || user.mustChangePassword) return <AuthScreen user={user} onAuthenticated={setUser} />;
+  }, [preferencesReady,user?.id]);
+  if (user === undefined || (user && !preferencesReady)) return <div className="auth-loading">Загрузка настроек пользователя…</div>;
+  if (!user) return <AuthScreen onAuthenticated={setUser} />;
   return <QueryClientProvider client={queryClient}><Shell user={user} onLoggedOut={() => { queryClient.clear(); setUser(null); }} /></QueryClientProvider>;
 }

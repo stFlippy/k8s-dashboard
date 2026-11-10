@@ -1,5 +1,5 @@
 export type ClusterAuthType = 'kubectl-login';
-export interface UserAccount { id: string; username: string; mustChangePassword: boolean; csrf?: string; }
+export interface UserAccount { id: string; username: string; mustChangePassword: boolean; isAdmin: boolean; csrf?: string; }
 
 export interface Cluster {
   id: string;
@@ -20,27 +20,20 @@ export interface ClusterInput {
   name: string;
   authType: ClusterAuthType;
   enabled: boolean;
-  context?: string;
-  kubeconfigPath?: string;
-  kubeconfigData?: string;
   server?: string;
   username?: string;
-  token?: string;
   password?: string;
 }
 
 export interface ClusterTestResult { ok: boolean; namespaces: number; }
-export interface NodeResource { cpu: string | null; memory: string | null; pods?: string | null; storage?: string | null; }
-export interface ClusterNode { name: string; ready: boolean; roles: string[]; addresses: Array<{ type: string; address: string }>; capacity: NodeResource; allocatable: NodeResource; usage: Pick<NodeResource, 'cpu' | 'memory'> | null; conditions: Array<{ type: string; status: string; reason: string | null; message: string | null; lastTransitionTime: string | null }>; labels: Record<string, string>; taints: string[]; kubeletVersion: string | null; osImage: string | null; kernelVersion: string | null; containerRuntime: string | null; architecture: string | null; }
-export interface ClusterHealth { metricsAvailable: boolean; metricsError: string | null; nodes: ClusterNode[]; }
 export interface Namespace { name: string; age: string; }
-export interface Deployment { name: string; namespace: string; replicas: number; availableReplicas: number; image: string; }
+export interface Deployment { name: string; namespace: string; uid: string; replicas: number; availableReplicas: number; image: string; }
 export interface DeploymentContainer { name: string; image: string; cpuRequest: string | null; cpuLimit: string | null; memoryRequest: string | null; memoryLimit: string | null; }
 export interface DeploymentDetail extends Deployment { creationTimestamp: string | null; containers: DeploymentContainer[]; resource: unknown; }
-export interface DeploymentResourcesInput { containerName: string; cpuRequest?: string | null; cpuLimit?: string | null; memoryRequest?: string | null; memoryLimit?: string | null; }
+export interface DeploymentResourcesInput { containerName: string; cpuRequest?: string | null; cpuLimit?: string | null; memoryRequest?: string | null; memoryLimit?: string | null; expectedResourceVersion?: string; acknowledgeRollout?: boolean; }
 
-export type PodStatus = 'Running' | 'Pending' | 'Failed' | 'Unknown';
-export interface Pod { name: string; namespace: string; status: PodStatus; creationTimestamp: string | null; restartCount: number; ip: string | null; host: string | null; lastRestartAt: string | null; terminating: boolean; }
+export type PodStatus = 'Running' | 'Pending' | 'Failed' | 'Unknown' | 'Completed' | 'Terminating';
+export interface Pod { name: string; namespace: string; uid: string; hasController: boolean; ownerDeploymentUid: string | null; status: PodStatus; creationTimestamp: string | null; restartCount: number; ip: string | null; host: string | null; lastRestartAt: string | null; terminating: boolean; }
 export interface PodCondition { type: string; status: string; reason: string | null; message: string | null; lastTransitionTime: string | null; }
 export interface PodContainer { name: string; image: string; ready: boolean; restartCount: number; state: string; ports: string[]; cpuRequest: string | null; cpuLimit: string | null; memoryRequest: string | null; memoryLimit: string | null; }
 export interface PodDetail extends Pod { qosClass: string | null; serviceAccount: string | null; containers: PodContainer[]; conditions: PodCondition[]; resource: unknown; }

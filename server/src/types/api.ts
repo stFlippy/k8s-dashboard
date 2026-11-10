@@ -19,13 +19,14 @@ export interface ClusterInputDto {
   name: string;
   authType: ClusterAuthType;
   enabled?: boolean;
-  context?: string | null;
-  kubeconfigPath?: string | null;
-  kubeconfigData?: string | null;
   server?: string | null;
   username?: string | null;
-  token?: string | null;
   password?: string | null;
+}
+
+/** Internal result of the server-side kubectl login, never accepted from the API. */
+export interface AuthenticatedClusterInput extends ClusterInputDto {
+  kubeconfigData?: string;
 }
 
 export interface NamespaceDto {
@@ -40,6 +41,7 @@ export interface ClusterHealthDto { metricsAvailable: boolean; metricsError: str
 export interface DeploymentDto {
   name: string;
   namespace: string;
+  uid: string;
   replicas: number;
   availableReplicas: number;
   image: string;
@@ -66,12 +68,17 @@ export interface DeploymentResourcesInputDto {
   cpuLimit?: string | null;
   memoryRequest?: string | null;
   memoryLimit?: string | null;
+  expectedResourceVersion?: string;
+  acknowledgeRollout?: boolean;
 }
 
 export interface PodDto {
   name: string;
   namespace: string;
-  status: 'Running' | 'Pending' | 'Failed' | 'Unknown';
+  uid: string;
+  hasController: boolean;
+  ownerDeploymentUid: string | null;
+  status: 'Running' | 'Pending' | 'Failed' | 'Unknown' | 'Completed' | 'Terminating';
   creationTimestamp: string | null;
   restartCount: number;
   ip: string | null;

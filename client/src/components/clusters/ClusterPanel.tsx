@@ -4,7 +4,7 @@ import type { Cluster, ClusterInput } from '../../types/kubernetes';
 import styles from './ClusterPanel.module.css';
 import { clusterAlias, readClusterAliases, writeClusterAlias } from '../../utils/clusterAliases';
 import { UserManagement } from '../auth/UserManagement';
-import { changePassword } from '../../api/auth';
+import { SystemStatus } from './SystemStatus';
 import { ActionConfirmModal } from '../common/ActionConfirmModal';
 import type { ActionConfirmRequest } from '../common/ActionConfirmModal';
 
@@ -12,6 +12,7 @@ interface Props {
   open: boolean;
   onClose: () => void;
   onLogout: () => void;
+  currentUser: { id: string; isAdmin: boolean };
 }
 
 const emptyInput = (): ClusterInput => ({
@@ -38,7 +39,7 @@ function HintLabel({ text, hint }: { text: string; hint: string }) {
   return <span className={styles.labelText} data-tooltip={hint} title={hint}>{text}</span>;
 }
 
-export function ClusterPanel({ open, onClose, onLogout }: Props) {
+export function ClusterPanel({ open, onClose, onLogout, currentUser }: Props) {
   const clustersQuery = useClusters();
   const mutations = useClusterMutations();
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -46,10 +47,7 @@ export function ClusterPanel({ open, onClose, onLogout }: Props) {
   const [message, setMessage] = useState<string>('');
   const [aliases, setAliases] = useState<Record<string, string>>(() => readClusterAliases());
   const [theme, setTheme] = useState<'dark' | 'light'>(() => window.localStorage.getItem('quaber.theme') === 'light' ? 'light' : 'dark');
-  const [settingsTab, setSettingsTab] = useState<'personal' | 'clusters' | 'users'>('personal');
-  const [currentPassword, setCurrentPassword] = useState('');
-  const [newPassword, setNewPassword] = useState('');
-  const [repeatPassword, setRepeatPassword] = useState('');
+  const [settingsTab, setSettingsTab] = useState<'personal' | 'clusters' | 'users' | 'system'>('personal');
   const [confirmRequest, setConfirmRequest] = useState<ActionConfirmRequest | null>(null);
 
   const clusters = clustersQuery.data ?? [];
@@ -132,7 +130,6 @@ export function ClusterPanel({ open, onClose, onLogout }: Props) {
     confirmLabel: 'Удалить кластер',
     onConfirm: () => remove(cluster)
   });
-  const updateOwnPassword = async () => { if(newPassword!==repeatPassword){setMessage('Новые пароли не совпадают.');return;}try { await changePassword(currentPassword,newPassword); setMessage('Пароль изменён. Выполняется выход из учётной записи.'); onLogout(); } catch(error){setMessage(error instanceof Error?error.message:'Не удалось изменить пароль.');} };
 
   if (!open) return null;
 
@@ -148,10 +145,10 @@ export function ClusterPanel({ open, onClose, onLogout }: Props) {
           <button className={styles.close} onClick={onClose} aria-label="Закрыть" title="Закрыть">×</button>
         </div>
 
-        <nav className={styles.settingsTabs}><button className={settingsTab === 'personal' ? styles.active : ''} onClick={() => setSettingsTab('personal')}>Личное</button><button className={settingsTab === 'clusters' ? styles.active : ''} onClick={() => setSettingsTab('clusters')}>Кластеры</button><button className={settingsTab === 'users' ? styles.active : ''} onClick={() => setSettingsTab('users')}>Пользователи</button></nav>
+        <nav className={styles.settingsTabs}><button className={settingsTab === 'personal' ? styles.active : ''} onClick={() => setSettingsTab('personal')}>Личное</button><button className={settingsTab === 'clusters' ? styles.active : ''} onClick={() => setSettingsTab('clusters')}>Кластеры</button>{currentUser.isAdmin && <button className={settingsTab === 'users' ? styles.active : ''} onClick={() => setSettingsTab('users')}>Пользователи</button>}<button className={settingsTab === 'system' ? styles.active : ''} onClick={() => setSettingsTab('system')}>Сервер</button></nav>
 
         <div className={styles.body}>
-          {settingsTab === 'personal' && <><label className={styles.themeSwitch}><span><b>Светлая тема</b><small>Настройка сохраняется за учётной записью</small></span><input type="checkbox" checked={theme === 'light'} onChange={(event) => setTheme(event.target.checked ? 'light' : 'dark')} /></label><div className={styles.passwordCard}><h3>Смена пароля</h3><label>Текущий пароль<input type="password" maxLength={256} autoComplete="off" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label><label>Новый пароль<input type="password" minLength={12} maxLength={256} autoComplete="off" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></label><label>Повторите новый пароль<input type="password" minLength={12} maxLength={256} autoComplete="off" value={repeatPassword} onChange={(event) => setRepeatPassword(event.target.value)} /></label><button className={styles.primary} disabled={!currentPassword || newPassword.length < 12 || newPassword !== repeatPassword} onClick={() => { void updateOwnPassword(); }}>Изменить пароль</button></div><div className={styles.actions}><button onClick={onLogout}>Выйти из учётной записи</button></div>{message && <div className={styles.message}><span>{message}</span><button className={styles.messageClose} onClick={() => setMessage('')} aria-label="Закрыть сообщение" title="Закрыть">×</button></div>}</>}
+          {settingsTab === 'personal' && <><label className={styles.themeSwitch}><span><b>Светлая тема</b><small>Настройка сохраняется за учётной записью</small></span><input type="checkbox" checked={theme === 'light'} onChange={(event) => setTheme(event.target.checked ? 'light' : 'dark')} /></label><div className={styles.passwordCard}><h3>Пароль</h3><p>Пароль хранится и меняется на внешнем сервере авторизации. Quaber его не сохраняет.</p></div><div className={styles.actions}><button onClick={onLogout}>Выйти из учётной записи</button></div>{message && <div className={styles.message}><span>{message}</span><button className={styles.messageClose} onClick={() => setMessage('')} aria-label="Закрыть сообщение" title="Закрыть">×</button></div>}</>}
           {settingsTab === 'clusters' && <>
           {secretsLocked && (
             <div className={styles.warning}>
@@ -220,7 +217,8 @@ export function ClusterPanel({ open, onClose, onLogout }: Props) {
 
           {message && <div className={styles.message}><span>{message}</span><button className={styles.messageClose} onClick={() => setMessage('')} aria-label="Закрыть сообщение" title="Закрыть">×</button></div>}
           </>}
-          {settingsTab === 'users' && <UserManagement />}
+          {settingsTab === 'users' && currentUser.isAdmin && <UserManagement currentUserId={currentUser.id} />}
+          {settingsTab === 'system' && <SystemStatus />}
         </div>
       </aside>
       <ActionConfirmModal request={confirmRequest} onClose={() => setConfirmRequest(null)} />

@@ -3,12 +3,13 @@ import { getClusterClients } from './cluster-client.ts';
 import type { PodDto } from '../types/api.ts';
 
 function normalizePodStatus(pod: k8s.V1Pod): PodDto['status'] {
-  if (pod.metadata?.deletionTimestamp) return 'Failed';
+  if (pod.metadata?.deletionTimestamp) return 'Terminating';
   const phase = pod.status?.phase;
   if (phase === 'Failed') return 'Failed';
 
   if (phase === 'Running') return 'Running';
   if (phase === 'Pending') return 'Pending';
+  if (phase === 'Succeeded') return 'Completed';
   return 'Unknown';
 }
 
@@ -31,12 +32,25 @@ function lastRestartAt(containerStatuses: k8s.V1ContainerStatus[] | undefined): 
 }
 
 export async function listPods(clusterId: string, namespace: string): Promise<PodDto[]> {
-  const { coreApi } = await getClusterClients(clusterId);
-  const response = await coreApi.listNamespacedPod({ namespace });
+  const { coreApi, appsApi } = await getClusterClients(clusterId);
+  const [response, replicaSets] = await Promise.all([
+    coreApi.listNamespacedPod({ namespace }),
+    appsApi.listNamespacedReplicaSet({ namespace })
+  ]);
+  const replicaSetDeployments = new Map(replicaSets.items.map((replicaSet) => [
+    replicaSet.metadata?.uid ?? '',
+    replicaSet.metadata?.ownerReferences?.find((owner) => owner.controller && owner.kind === 'Deployment')?.uid ?? null
+  ]));
 
   return response.items.map((item: k8s.V1Pod) => ({
     name: item.metadata?.name ?? 'unknown',
     namespace: item.metadata?.namespace ?? namespace,
+    uid: item.metadata?.uid ?? '',
+    hasController: Boolean(item.metadata?.ownerReferences?.some((owner) => owner.controller)),
+    ownerDeploymentUid: (() => {
+      const owner = item.metadata?.ownerReferences?.find((reference) => reference.controller);
+      return owner?.kind === 'ReplicaSet' ? replicaSetDeployments.get(owner.uid) ?? null : owner?.kind === 'Deployment' ? owner.uid : null;
+    })(),
     status: normalizePodStatus(item),
     creationTimestamp: item.metadata?.creationTimestamp?.toISOString() ?? null,
     restartCount: item.status?.containerStatuses?.reduce(

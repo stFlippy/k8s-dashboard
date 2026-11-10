@@ -2,7 +2,8 @@ import { spawn } from 'node:child_process';
 
 const processes = [
   spawn('npm', ['--prefix', 'client', 'run', 'dev'], { stdio: 'inherit', shell: true }),
-  spawn('npm', ['--prefix', 'server', 'run', 'dev'], { stdio: 'inherit', shell: true })
+  spawn('npm', ['--prefix', 'server', 'run', 'dev'], { stdio: 'inherit', shell: true }),
+  spawn('npm', ['--prefix', 'auth_server', 'run', 'dev'], { stdio: 'inherit', shell: true })
 ];
 
 const shutdown = () => {

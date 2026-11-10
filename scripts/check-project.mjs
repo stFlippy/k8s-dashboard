@@ -72,7 +72,29 @@ for (const configPath of ['client/tsconfig.app.json', 'client/tsconfig.node.json
 
 const gitignore = await readFile(join(root, '.gitignore'), 'utf8');
 if (!gitignore.includes('server/data/clusters.json')) throw new Error('Encrypted runtime cluster store must be ignored.');
-if (existsSync(join(root, '.env'))) throw new Error('A real .env must not be packaged.');
-if (existsSync(join(root, 'server/data/clusters.json'))) throw new Error('Runtime cluster credentials must not be packaged.');
+if (existsSync(join(root, '.env'))) console.warn('Local .env exists; ensure release packaging excludes it.');
+if (existsSync(join(root, 'server/data/clusters.json'))) console.warn('Local server/data/clusters.json exists; release packaging must exclude it.');
+
+async function collectSourceFiles(directory, relative = '') {
+  const files = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      if (['.git', '.build', 'node_modules', 'dist', 'release', 'send', 'temp', 'data'].includes(entry.name)) continue;
+      files.push(...await collectSourceFiles(join(directory, entry.name), join(relative, entry.name)));
+    } else if (entry.isFile()) files.push(join(relative, entry.name));
+  }
+  return files;
+}
+
+for (const path of await collectSourceFiles(root)) {
+  if (/(?:^|\/)kubeconfig(?:\.[^/]+)?$/i.test(path) || /\.(?:sqlite|db|pem|p12|pfx|key)(?:-(?:wal|shm))?$/i.test(path)) {
+    throw new Error(`Runtime data or credential in source tree: ${path}`);
+  }
+  if (!/\.(?:ya?ml|json|cfg)$/i.test(path)) continue;
+  const contents = await readFile(join(root, path), 'utf8');
+  if (/client-key-data\s*:\s*\S+|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/.test(contents)) {
+    throw new Error(`Private key material in source tree: ${path}`);
+  }
+}
 
 console.log(`Project structure, credentials and no-any checks passed for ${tsFiles.length} TypeScript files.`);

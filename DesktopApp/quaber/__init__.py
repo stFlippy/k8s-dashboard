@@ -1,0 +1,1 @@
+"""Quaber desktop application."""

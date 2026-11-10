@@ -33,6 +33,5 @@ export const environment = {
   masterKey: process.env.DASHBOARD_MASTER_KEY || undefined,
   clusterStorePath: process.env.CLUSTER_STORE_PATH || (standaloneRuntime ? runtimeFile('data/clusters.json') : resolve(process.cwd(), 'data/clusters.json')),
   userDatabasePath: process.env.USER_DATABASE_PATH || (standaloneRuntime ? runtimeFile('data/users.sqlite') : resolve(process.cwd(), 'data/users.sqlite')),
-  bootstrapUserPath: process.env.BOOTSTRAP_USER_PATH || (standaloneRuntime ? runtimeFile('data/bootstrap-user.json') : resolve(process.cwd(), 'data/bootstrap-user.json')),
   staticDirectory: process.env.STATIC_DIR || (standaloneRuntime ? runtimeFile('public') : undefined)
 };

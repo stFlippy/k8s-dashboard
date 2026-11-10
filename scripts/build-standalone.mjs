@@ -93,8 +93,12 @@ await copyFile(join(root, 'check-runtime.sh'), join(outputDirectory, 'check-runt
 await chmod(join(outputDirectory, 'check-runtime.sh'), 0o755);
 await copyFile(join(root, 'quaber.config.json'), join(outputDirectory, 'quaber.config.json'));
 await copyFile(join(root, '.env.example'), join(outputDirectory, '.env.example'));
-await copyFile(join(root, 'server', 'bootstrap-user.example.json'), join(outputDirectory, 'data', 'bootstrap-user.example.json'));
 await copyFile(join(root, 'STANDALONE.md'), join(outputDirectory, 'README.md'));
+
+if (process.env.QUABER_SKIP_ARCHIVE === '1') {
+  console.log(`\nStandalone package without archive: ${outputDirectory}`);
+  process.exit(0);
+}
 
 try {
   execFileSync('xz', ['--version'], { stdio: 'ignore' });

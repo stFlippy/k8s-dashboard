@@ -74,10 +74,10 @@ else
   fail 'каталог data отсутствует или недоступен для записи текущему пользователю; создайте его и исправьте владельца/права.'
 fi
 
-if [ -r "$package_dir/data/bootstrap-user.json" ] || [ -r "$package_dir/data/users.sqlite" ]; then
-  ok 'найден файл первичного пользователя или база пользователей'
+if [ -r "$package_dir/quaber.config.json" ]; then
+  ok 'конфигурация сервера авторизации доступна'
 else
-  fail 'нет data/bootstrap-user.json и data/users.sqlite; скопируйте data/bootstrap-user.example.json в data/bootstrap-user.json и задайте логин/временный пароль.'
+  fail 'нет quaber.config.json с адресом сервера авторизации.'
 fi
 
 master_key=

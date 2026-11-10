@@ -20,6 +20,13 @@ interface ExecSocket {
   close(): void;
 }
 
+let activeOutputRequests = 0;
+async function withOutputSlot<T>(work: () => Promise<T>): Promise<T> {
+  if (activeOutputRequests >= 8) throw new Error('Too many concurrent log/Exec requests; retry later.');
+  activeOutputRequests += 1;
+  try { return await work(); } finally { activeOutputRequests -= 1; }
+}
+
 interface MetricContainerSource {
   name: string;
   usage: { cpu: string; memory: string };
@@ -182,10 +189,12 @@ function quantity(value: unknown): string | null {
 }
 
 function podStatus(pod: k8s.V1Pod): PodDetailDto['status'] {
+  if (pod.metadata?.deletionTimestamp) return 'Terminating';
   const phase = pod.status?.phase;
   if (phase === 'Failed') return 'Failed';
   if (phase === 'Running') return 'Running';
   if (phase === 'Pending') return 'Pending';
+  if (phase === 'Succeeded') return 'Completed';
   return 'Unknown';
 }
 
@@ -213,6 +222,7 @@ export async function getDeploymentDetail(clusterId: string, namespace: string, 
   return {
     name: deployment.metadata?.name ?? name,
     namespace: deployment.metadata?.namespace ?? namespace,
+    uid: deployment.metadata?.uid ?? '',
     replicas: deployment.spec?.replicas ?? 0,
     availableReplicas: deployment.status?.availableReplicas ?? 0,
     image: containers.map((container: k8s.V1Container) => container.image).filter(Boolean).join(', '),
@@ -258,26 +268,48 @@ export async function restartDeployment(clusterId: string, namespace: string, na
   });
 }
 
+export function mergeContainerResources(resources: k8s.V1ResourceRequirements | undefined, input: DeploymentResourcesInputDto): k8s.V1ResourceRequirements {
+  const requests: Record<string, string> = { ...(resources?.requests ?? {}) };
+  const limits: Record<string, string> = { ...(resources?.limits ?? {}) };
+  for (const [field, destination, name] of [
+    ['cpuRequest', requests, 'cpu'], ['memoryRequest', requests, 'memory'],
+    ['cpuLimit', limits, 'cpu'], ['memoryLimit', limits, 'memory']
+  ] as const) {
+    if (input[field] === undefined) continue;
+    const value = input[field]?.trim();
+    if (value) destination[name] = value;
+    else delete destination[name];
+  }
+  return { ...(resources ?? {}), requests: Object.keys(requests).length ? requests : undefined, limits: Object.keys(limits).length ? limits : undefined };
+}
+
 export async function updateDeploymentResources(
   clusterId: string,
   namespace: string,
   name: string,
   input: DeploymentResourcesInputDto
 ): Promise<DeploymentDetailDto> {
+  if (input.acknowledgeRollout !== true || !input.expectedResourceVersion) throw new Error('Preview resource changes and acknowledge the rollout before applying.');
   return replaceDeployment(clusterId, namespace, name, (deployment) => {
+    if (deployment.metadata?.resourceVersion !== input.expectedResourceVersion) throw new Error('Deployment changed since preview; request a new preview.');
     const container = deployment.spec?.template.spec?.containers?.find((item: k8s.V1Container) => item.name === input.containerName);
     if (!container) throw new Error(`Container '${input.containerName}' not found.`);
-    const requests: Record<string, string> = {};
-    const limits: Record<string, string> = {};
-    if (input.cpuRequest?.trim()) requests.cpu = input.cpuRequest.trim();
-    if (input.memoryRequest?.trim()) requests.memory = input.memoryRequest.trim();
-    if (input.cpuLimit?.trim()) limits.cpu = input.cpuLimit.trim();
-    if (input.memoryLimit?.trim()) limits.memory = input.memoryLimit.trim();
-    container.resources = {
-      requests: Object.keys(requests).length ? requests : undefined,
-      limits: Object.keys(limits).length ? limits : undefined
-    };
+    container.resources = mergeContainerResources(container.resources, input);
   });
+}
+
+export async function previewDeploymentResources(clusterId: string, namespace: string, name: string, input: DeploymentResourcesInputDto) {
+  const detail = await getDeploymentDetail(clusterId, namespace, name);
+  const container = detail.containers.find((item) => item.name === input.containerName);
+  if (!container) throw new Error(`Container '${input.containerName}' not found.`);
+  const fields = ['cpuRequest', 'memoryRequest', 'cpuLimit', 'memoryLimit'] as const;
+  const diff = Object.fromEntries(fields.filter((field) => input[field] !== undefined && (input[field]?.trim() || null) !== container[field]).map((field) => [field, { from: container[field], to: input[field]?.trim() || null }]));
+  return {
+    clusterId, namespace, deployment: name, container: input.containerName,
+    resourceVersion: (detail.resource as { metadata?: { resourceVersion?: string } }).metadata?.resourceVersion ?? null,
+    diff,
+    warning: 'Changing CPU/RAM in the Pod template triggers a Deployment rollout. Other resource keys are preserved.'
+  };
 }
 
 export async function replaceDeploymentResource(clusterId: string, namespace: string, name: string, resource: unknown): Promise<DeploymentDetailDto> {
@@ -325,6 +357,9 @@ export async function getPodDetail(clusterId: string, namespace: string, name: s
   return {
     name: pod.metadata?.name ?? name,
     namespace: pod.metadata?.namespace ?? namespace,
+    uid: pod.metadata?.uid ?? '',
+    hasController: Boolean(pod.metadata?.ownerReferences?.some((owner) => owner.controller)),
+    ownerDeploymentUid: null,
     status: podStatus(pod),
     creationTimestamp: iso(pod.metadata?.creationTimestamp),
     restartCount: (pod.status?.containerStatuses ?? []).reduce((sum: number, status: k8s.V1ContainerStatus) => sum + (status.restartCount ?? 0), 0),
@@ -340,9 +375,20 @@ export async function getPodDetail(clusterId: string, namespace: string, name: s
   };
 }
 
-export async function deletePod(clusterId: string, namespace: string, name: string): Promise<void> {
+export function assertPodDeletionAllowed(metadata: k8s.V1ObjectMeta | undefined, uid: string, mode: 'restart' | 'delete'): void {
+  if (!uid || !/^[0-9a-f-]{36}$/i.test(uid)) throw new Error('Pod UID is required to prevent deleting a replacement Pod.');
+  if (metadata?.uid !== uid) throw new Error('Pod changed since confirmation; reload and try again.');
+  const controlled = Boolean(metadata?.ownerReferences?.some((owner) => owner.controller));
+  if (mode === 'restart' && !controlled) throw new Error('This Pod has no controller and cannot be restarted by deletion.');
+  if (mode === 'delete' && controlled) throw new Error('Controlled Pod must use the restart action.');
+}
+
+export async function deletePod(clusterId: string, namespace: string, name: string, uid: string, mode: 'restart' | 'delete'): Promise<void> {
+  if (!uid || !/^[0-9a-f-]{36}$/i.test(uid)) throw new Error('Pod UID is required to prevent deleting a replacement Pod.');
   const { coreApi } = await getClusterClients(clusterId);
-  await coreApi.deleteNamespacedPod({ namespace, name });
+  const current = await coreApi.readNamespacedPod({ namespace, name });
+  assertPodDeletionAllowed(current.metadata, uid, mode);
+  await coreApi.deleteNamespacedPod({ namespace, name, body: { preconditions: { uid } } });
 }
 
 export async function replacePodResource(clusterId: string, namespace: string, name: string, resource: unknown): Promise<PodDetailDto> {
@@ -350,13 +396,14 @@ export async function replacePodResource(clusterId: string, namespace: string, n
   const pod = resource as k8s.V1Pod;
   if (pod.metadata?.name && pod.metadata.name !== name) throw new Error('metadata.name cannot be changed.');
   if (pod.metadata?.namespace && pod.metadata.namespace !== namespace) throw new Error('metadata.namespace cannot be changed.');
+  if (!pod.metadata?.resourceVersion) throw new Error('metadata.resourceVersion is required to prevent overwriting a newer Pod. Reload the document.');
   pod.metadata = { ...(pod.metadata ?? {}), name, namespace };
   const { coreApi } = await getClusterClients(clusterId);
   await coreApi.replaceNamespacedPod({ namespace, name, body: pod });
   return getPodDetail(clusterId, namespace, name);
 }
 
-export async function getPodLogs(
+async function getPodLogsLimited(
   clusterId: string,
   namespace: string,
   name: string,
@@ -368,25 +415,48 @@ export async function getPodLogs(
   const container = containerName || detail.containers[0]?.name;
   if (!container) throw new Error('Pod has no containers.');
   const config = await getClusterKubeConfig(clusterId);
-  const log = new k8s.Log(config);
-  const output = new PassThrough();
-  const chunks: Buffer[] = [];
-  output.on('data', (chunk: Buffer | string) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
-  const finished = new Promise<void>((resolve, reject) => {
-    output.once('finish', resolve);
-    output.once('error', reject);
+  const server = config.getCurrentCluster()?.server;
+  if (!server) throw new Error('Active Kubernetes cluster is missing.');
+  const maximumBytes = 4 * 1024 * 1024;
+  const url = new URL(`${server.replace(/\/$/, '')}/api/v1/namespaces/${encodeURIComponent(namespace)}/pods/${encodeURIComponent(name)}/log`);
+  url.searchParams.set('container', container);
+  url.searchParams.set('tailLines', String(Math.max(1, Math.min(5000, tailLines))));
+  url.searchParams.set('timestamps', 'true');
+  url.searchParams.set('previous', String(previous));
+  url.searchParams.set('limitBytes', String(maximumBytes));
+  return new Promise<string>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let settled = false;
+    const finish = (error?: Error, truncated = false) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      if (error) reject(error);
+      else resolve(`${Buffer.concat(chunks).toString('utf8')}${truncated || size >= maximumBytes ? '\n[Вывод ограничен 4 МиБ]' : ''}`);
+    };
+    // The Kubernetes API server negotiates this subresource using its default
+    // media types. An explicit Accept: text/plain can be rejected with HTTP 406.
+    const req = request(url, { method: 'GET' }, (response) => {
+      response.on('data', (chunk: Buffer) => {
+        const remaining = (response.statusCode === 200 ? maximumBytes : 4096) - size;
+        if (remaining > 0) { chunks.push(chunk.subarray(0, remaining)); size += Math.min(remaining, chunk.length); }
+        if (chunk.length > remaining) { finish(response.statusCode === 200 ? undefined : new Error(`HTTP-Code: ${response.statusCode} ${Buffer.concat(chunks).toString('utf8').slice(0, 500)}`), true); req.destroy(); }
+      });
+      response.on('end', () => finish(response.statusCode === 200 ? undefined : new Error(`HTTP-Code: ${response.statusCode} ${Buffer.concat(chunks).toString('utf8').slice(0, 500)}`)));
+      response.on('error', (error) => finish(error));
+    });
+    const deadline = setTimeout(() => { finish(new Error('Log request exceeded 30 seconds.')); req.destroy(); }, 30_000);
+    req.on('error', (error) => finish(error));
+    req.end();
   });
-  await log.log(namespace, name, container, output, {
-    follow: false,
-    tailLines: Math.max(1, Math.min(5000, tailLines)),
-    timestamps: true,
-    previous
-  });
-  await finished;
-  return Buffer.concat(chunks).toString('utf8');
 }
 
-export async function execPod(clusterId: string, namespace: string, name: string, input: ExecInputDto): Promise<ExecResultDto> {
+export async function getPodLogs(clusterId: string, namespace: string, name: string, containerName: string | undefined, tailLines: number, previous: boolean): Promise<string> {
+  return withOutputSlot(() => getPodLogsLimited(clusterId, namespace, name, containerName, tailLines, previous));
+}
+
+async function execPodLimited(clusterId: string, namespace: string, name: string, input: ExecInputDto): Promise<ExecResultDto> {
   const command = input.command.trim();
   if (!command) throw new Error('Command is required.');
   if (command.length > 8_192) throw new Error('Command is too long.');
@@ -398,8 +468,18 @@ export async function execPod(clusterId: string, namespace: string, name: string
   const stderrChunks: Buffer[] = [];
   const stdout = new PassThrough();
   const stderr = new PassThrough();
-  stdout.on('data', (chunk: Buffer | string) => stdoutChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
-  stderr.on('data', (chunk: Buffer | string) => stderrChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+  const maximumBytes = 2 * 1024 * 1024;
+  let outputSize = 0;
+  let outputExceeded = false;
+  let abortOutput: (() => void) | null = null;
+  const collect = (target: Buffer[]) => (chunk: Buffer | string) => {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    const remaining = maximumBytes - outputSize;
+    if (remaining > 0) { target.push(buffer.subarray(0, remaining)); outputSize += Math.min(buffer.length, remaining); }
+    if (buffer.length > remaining && !outputExceeded) { outputExceeded = true; abortOutput?.(); }
+  };
+  stdout.on('data', collect(stdoutChunks));
+  stderr.on('data', collect(stderrChunks));
   const stdoutFinished = new Promise<void>((resolve, reject) => {
     stdout.once('finish', resolve);
     stdout.once('error', reject);
@@ -413,14 +493,26 @@ export async function execPod(clusterId: string, namespace: string, name: string
   let status: unknown = null;
   await new Promise<void>((resolve, reject) => {
     let settled = false;
+    let cancelled = false;
     let socket: ExecSocket | null = null;
+    abortOutput = () => {
+      if (settled) return;
+      settled = true;
+      cancelled = true;
+      clearTimeout(timer);
+      socket?.close();
+      stdout.end();
+      stderr.end();
+      reject(new Error('Exec output exceeded 2 MiB; command outcome is unknown. Do not retry a changing command automatically.'));
+    };
     const timer = setTimeout(() => {
       if (!settled) {
         settled = true;
+        cancelled = true;
         socket?.close();
         stdout.end();
         stderr.end();
-        reject(new Error('Exec timed out after 30 seconds.'));
+        reject(new Error('Exec timed out after 30 seconds; command outcome is unknown. Do not retry a changing command automatically.'));
       }
     }, 30_000);
     exec.exec(namespace, name, container, ['/bin/sh', '-lc', command], stdout, stderr, null, false, (result: k8s.V1Status) => {
@@ -431,6 +523,7 @@ export async function execPod(clusterId: string, namespace: string, name: string
         resolve();
       }
     }).then((connectedSocket: ExecSocket) => {
+      if (cancelled) { connectedSocket.close(); return; }
       socket = connectedSocket;
       connectedSocket.on('error', (error: Error) => {
         if (!settled) {
@@ -445,7 +538,7 @@ export async function execPod(clusterId: string, namespace: string, name: string
           clearTimeout(timer);
           stdout.end();
           stderr.end();
-          resolve();
+          reject(new Error('Exec connection closed without a final Kubernetes status; command outcome is unknown. Do not retry a changing command automatically.'));
         }
       });
     }).catch((error: unknown) => {
@@ -465,6 +558,10 @@ export async function execPod(clusterId: string, namespace: string, name: string
     stderr: Buffer.concat(stderrChunks).toString('utf8'),
     status
   };
+}
+
+export async function execPod(clusterId: string, namespace: string, name: string, input: ExecInputDto): Promise<ExecResultDto> {
+  return withOutputSlot(() => execPodLimited(clusterId, namespace, name, input));
 }
 
 export async function getPodMetrics(clusterId: string, namespace: string, name: string): Promise<PodMetricsDto> {

@@ -9,6 +9,7 @@ export async function listDeployments(clusterId: string, namespace: string): Pro
   return response.items.map((item: k8s.V1Deployment) => ({
     name: item.metadata?.name ?? 'unknown',
     namespace,
+    uid: item.metadata?.uid ?? '',
     replicas: item.spec?.replicas ?? 0,
     availableReplicas: item.status?.availableReplicas ?? 0,
     image: item.spec?.template?.spec?.containers?.[0]?.image ?? 'unknown'

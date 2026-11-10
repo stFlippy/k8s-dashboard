@@ -16,6 +16,7 @@ import {
   getPodEvents,
   getPodLogs,
   getPodMetrics,
+  previewDeploymentResources,
   replaceDeploymentResource,
   replacePodResource,
   restartDeployment,
@@ -25,8 +26,10 @@ import {
 import type { ClusterInputDto, DeploymentResourcesInputDto, ExecInputDto } from '../types/api.ts';
 import { getClusterHealth } from '../kubernetes/cluster-health.ts';
 import { authenticateKubectlLoginClusters, authenticateKubectlLoginInput } from '../kubernetes/kubectl-login-cli.ts';
-import { logError, logInfo, requestAction } from '../logging/logger.ts';
+import { logDebug, logError, logInfo, requestAction } from '../logging/logger.ts';
 import { stopClusterProxy } from '../kubernetes/kubectl-proxy.ts';
+import { auditMutation, systemStatus } from '../audit/mutations.ts';
+import { currentUser } from '../auth/request-context.ts';
 
 function sendJson(response: ServerResponse, status: number, data: unknown): void {
   const body = JSON.stringify(data);
@@ -57,6 +60,8 @@ export function safeErrorMessage(error: unknown): string {
 
 function sendError(response: ServerResponse, error: unknown, status = 500): void {
   const message = safeErrorMessage(error);
+  if (/outcome is unknown/i.test(message)) response.setHeader('X-Mutation-Outcome', 'unknown');
+  if (status === 500 && /(?:HTTP-Code:\s*409|\bresourceVersion\b|changed since confirmation|changed since preview)/i.test(message)) status = 409;
   // Do not dump arbitrary Kubernetes client error objects: they may carry
   // request metadata. Credentials are deliberately never written to logs.
   logError('API request failed', message, { status });
@@ -115,8 +120,9 @@ export async function handleApiRequest(
   if (!url.pathname.startsWith('/api/')) return false;
 
   try {
+    auditMutation(request.method, url, response);
     const action = requestAction(request.method, url.pathname);
-    if (action) logInfo(action, { clusterId: url.searchParams.get('clusterId'), namespace: url.searchParams.get('namespace') });
+    if (action) (request.method === 'GET' ? logDebug : logInfo)(action, { clusterId: url.searchParams.get('clusterId'), namespace: url.searchParams.get('namespace') });
     if (request.method === 'GET' && url.pathname === '/api/health') {
       const clusters = getResolvedClusters();
       sendJson(response, 200, {
@@ -124,6 +130,10 @@ export async function handleApiRequest(
         clusters: clusters.length,
         enabledClusters: clusters.filter((cluster) => cluster.enabled).length
       });
+      return true;
+    }
+    if (request.method === 'GET' && url.pathname === '/api/system/status') {
+      sendJson(response, 200, await systemStatus(currentUser().userId));
       return true;
     }
 
@@ -267,9 +277,20 @@ export async function handleApiRequest(
       return true;
     }
 
+    const deploymentResourcesPreview = url.pathname.match(/^\/api\/deployments\/([^/]+)\/resources\/preview$/);
+    if (deploymentResourcesPreview && request.method === 'POST') {
+      const payload = await readJson<DeploymentResourcesInputDto>(request);
+      sendJson(response, 200, await previewDeploymentResources(clusterId(url), requiredNamespace(url), pathPart(deploymentResourcesPreview[1]), payload));
+      return true;
+    }
+
     const deploymentResources = url.pathname.match(/^\/api\/deployments\/([^/]+)\/resources$/);
     if (deploymentResources && request.method === 'PUT') {
       const payload = await readJson<DeploymentResourcesInputDto>(request);
+      if (payload.acknowledgeRollout !== true || !payload.expectedResourceVersion) {
+        sendJson(response, 428, { error: 'Preview the resource diff and acknowledge the rollout before applying.', preview: await previewDeploymentResources(clusterId(url), requiredNamespace(url), pathPart(deploymentResources[1]), payload) });
+        return true;
+      }
       sendJson(response, 200, await updateDeploymentResources(clusterId(url), requiredNamespace(url), pathPart(deploymentResources[1]), payload));
       return true;
     }
@@ -290,7 +311,10 @@ export async function handleApiRequest(
         return true;
       }
       if (request.method === 'DELETE') {
-        await deletePod(cluster, namespace, name);
+        const uid = url.searchParams.get('uid') ?? '';
+        const mode = url.searchParams.get('mode');
+        if (mode !== 'restart' && mode !== 'delete') throw new Error('Pod deletion mode is required.');
+        await deletePod(cluster, namespace, name, uid, mode);
         response.statusCode = 204;
         response.end();
         return true;

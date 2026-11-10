@@ -2,14 +2,17 @@ import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   execPod,
+  getDeployments,
   getPod,
   getPodEvents,
   getPodLogs,
   getPodMetrics,
+  getPods,
   removePod,
   replacePodResource
 } from '../../api/kubernetes';
 import type { Pod, PodMetricContainer, PodRef } from '../../types/kubernetes';
+import { useClusterNamespaces } from '../../hooks/useClusterNamespaces';
 import { ActionConfirmModal } from '../common/ActionConfirmModal';
 import type { ActionConfirmRequest } from '../common/ActionConfirmModal';
 import { formatDate } from '../../utils/formatDate';
@@ -17,7 +20,7 @@ import styles from './PodPanel.module.css';
 import { CodeEditor } from '../common/CodeEditor';
 
 type Tab = 'logs' | 'exec' | 'describe' | 'yaml' | 'metrics' | 'events' | 'containers';
-interface Props { pod: PodRef | null; onClose: () => void; }
+interface Props { pod: PodRef | null; onSelectPod: (pod: PodRef) => void; onClose: () => void; }
 
 function age(timestamp: string | null): string {
   if (!timestamp) return '—';
@@ -87,9 +90,51 @@ function MetricChart({ title, history, containerName, value, request = null, lim
   </div>;
 }
 
-export function PodPanel({ pod, onClose }: Props) {
+export function PodPanel({ pod, onSelectPod, onClose }: Props) {
   const queryClient = useQueryClient();
-  const [tab, setTab] = useState<Tab>('logs');
+  const { groups } = useClusterNamespaces();
+  const [browseClusterId, setBrowseClusterId] = useState(pod?.clusterId ?? '');
+  const [browseNamespace, setBrowseNamespace] = useState(pod?.namespace ?? '');
+  const browseGroup = groups.find((group) => group.cluster.id === browseClusterId);
+  const browsingOtherScope = Boolean(pod && (browseClusterId !== pod.clusterId || browseNamespace !== pod.namespace));
+  const availablePods = useQuery({
+    queryKey: ['pods', browseClusterId, browseNamespace],
+    queryFn: () => getPods(browseClusterId, browseNamespace),
+    enabled: Boolean(pod && browseClusterId && browseNamespace),
+    refetchInterval: 10_000,
+    refetchOnWindowFocus: true
+  });
+  const availableDeployments = useQuery({
+    queryKey: ['deployments', browseClusterId, browseNamespace],
+    queryFn: () => getDeployments(browseClusterId, browseNamespace),
+    enabled: Boolean(pod && browseClusterId && browseNamespace),
+    refetchInterval: 10_000,
+    refetchOnWindowFocus: true
+  });
+  const deploymentsByUid = new Map((availableDeployments.data ?? []).map((item) => [item.uid, item]));
+  const sortedPods = [...(availablePods.data ?? [])].sort((a, b) => a.name.localeCompare(b.name));
+  const groupedPods = (availableDeployments.data ?? []).slice().sort((a, b) => a.name.localeCompare(b.name))
+    .map((deployment) => ({ deployment, pods: sortedPods.filter((item) => item.ownerDeploymentUid === deployment.uid) }));
+  const ungroupedPods = sortedPods.filter((item) => !item.ownerDeploymentUid || !deploymentsByUid.has(item.ownerDeploymentUid));
+
+  useEffect(() => {
+    if (browseNamespace || !browseGroup?.namespaces.length) return;
+    setBrowseNamespace(browseGroup.namespaces[0].name);
+  }, [browseNamespace, browseGroup?.namespaces]);
+
+  const selectPod = (name: string) => {
+    const selected = sortedPods.find((item) => item.name === name);
+    if (!selected || !pod) return;
+    onSelectPod({
+      clusterId: browseClusterId,
+      clusterName: browseGroup?.cluster.name ?? pod.clusterName,
+      namespace: browseNamespace,
+      podName: selected.name,
+      deploymentName: selected.ownerDeploymentUid ? deploymentsByUid.get(selected.ownerDeploymentUid)?.name : undefined,
+      initialTab: tab
+    });
+  };
+  const [tab, setTab] = useState<Tab>(pod?.initialTab ?? 'logs');
   const [container, setContainer] = useState('');
   const [tailLines, setTailLines] = useState(500);
   const [showPreviousLogs, setShowPreviousLogs] = useState(false);
@@ -97,6 +142,7 @@ export function PodPanel({ pod, onClose }: Props) {
   const [command, setCommand] = useState('');
   const [terminal, setTerminal] = useState<Array<{ command: string; output: string; error?: boolean }>>([]);
   const [resourceText, setResourceText] = useState('');
+  const [resourceDirty, setResourceDirty] = useState(false);
   const [message, setMessage] = useState('');
   const [metricMode, setMetricMode] = useState<'percent' | 'actual'>('percent');
   const [metricHistory, setMetricHistory] = useState<MetricSample[]>([]);
@@ -104,6 +150,24 @@ export function PodPanel({ pod, onClose }: Props) {
   const [confirmRequest, setConfirmRequest] = useState<ActionConfirmRequest | null>(null);
   const consoleInputRef = useRef<HTMLInputElement>(null);
   const terminalBodyRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!pod || !browsingOtherScope || availablePods.isFetching || availablePods.isError || availableDeployments.isFetching) return;
+    const first = sortedPods[0];
+    if (!first) return;
+    onSelectPod({
+      clusterId: browseClusterId,
+      clusterName: browseGroup?.cluster.name ?? pod.clusterName,
+      namespace: browseNamespace,
+      podName: first.name,
+      deploymentName: first.ownerDeploymentUid ? deploymentsByUid.get(first.ownerDeploymentUid)?.name : undefined,
+      initialTab: tab
+    });
+  }, [pod, browsingOtherScope, availablePods.dataUpdatedAt, availablePods.isFetching, availablePods.isError, availableDeployments.dataUpdatedAt, availableDeployments.isFetching, browseClusterId, browseNamespace, browseGroup?.cluster.name, onSelectPod, tab]);
+
+  useEffect(() => {
+    if (browsingOtherScope) setConsoleUnlockedUntil(0);
+  }, [browsingOtherScope]);
 
   useEffect(() => {
     const terminalBody = terminalBodyRef.current;
@@ -123,6 +187,9 @@ export function PodPanel({ pod, onClose }: Props) {
 
   useEffect(() => {
     if (pod) {
+      setConfirmRequest(null);
+      setResourceDirty(false);
+      setResourceText('');
       setTab(pod.initialTab ?? 'logs');
       setMessage('');
       setTerminal([]);
@@ -130,6 +197,7 @@ export function PodPanel({ pod, onClose }: Props) {
       setShowPreviousLogs(false);
       setMetricHistory([]);
     } else {
+      setConfirmRequest(null);
       setConsoleUnlockedUntil(0);
     }
   }, [pod]);
@@ -142,9 +210,9 @@ export function PodPanel({ pod, onClose }: Props) {
     const currentDetail = detail.data;
     if (currentDetail) {
       setContainer((current) => current && currentDetail.containers.some((item) => item.name === current) ? current : currentDetail.containers[0]?.name ?? '');
-      setResourceText(JSON.stringify(currentDetail.resource, null, 2));
+      if (!resourceDirty) setResourceText(JSON.stringify(currentDetail.resource, null, 2));
     }
-  }, [detail.dataUpdatedAt, key[0], key[1], key[2]]);
+  }, [detail.dataUpdatedAt, key[0], key[1], key[2], resourceDirty]);
 
   const logs = useQuery({
     queryKey: ['pod-logs', ...key, container, tailLines, showPreviousLogs],
@@ -156,12 +224,8 @@ export function PodPanel({ pod, onClose }: Props) {
   const metrics = useQuery({ queryKey: ['pod-metrics', ...key], queryFn: () => getPodMetrics(key[0], key[1], key[2]), enabled: Boolean(pod && tab === 'metrics'), refetchInterval: 5_000 });
   const events = useQuery({ queryKey: ['pod-events', ...key], queryFn: () => getPodEvents(key[0], key[1], key[2]), enabled: Boolean(pod && tab === 'events'), refetchInterval: 5_000 });
 
-  const remove = useMutation({ mutationFn: () => removePod(key[0], key[1], key[2]) });
-  const replace = useMutation({ mutationFn: async () => {
-    let parsed: unknown;
-    try { parsed = JSON.parse(resourceText); } catch { throw new Error('Редактор использует JSON-синтаксис. Не удалось распознать JSON.'); }
-    return replacePodResource(key[0], key[1], key[2], parsed);
-  }});
+  const remove = useMutation({ mutationFn: (target: { clusterId: string; namespace: string; name: string; uid: string; mode: 'restart' | 'delete' }) => removePod(target.clusterId, target.namespace, target.name, target.uid, target.mode) });
+  const replace = useMutation({ mutationFn: (target: { clusterId: string; namespace: string; name: string; resource: unknown }) => replacePodResource(target.clusterId, target.namespace, target.name, target.resource) });
   const runExec = useMutation({ mutationFn: (value: string) => execPod(key[0], key[1], key[2], container, value) });
   const consoleUnlocked = consoleUnlockedUntil > Date.now();
 
@@ -228,46 +292,78 @@ export function PodPanel({ pod, onClose }: Props) {
       <div className={styles.overlay} onClick={onClose} />
       <aside className={styles.panel}>
         <div className={styles.header}>
-          <div className={styles.title}><h2>{pod.podName}</h2></div>
+          <div className={styles.title}><h2>{browsingOtherScope ? 'Выбор Pod…' : pod.podName}</h2></div>
           <button className={styles.close} onClick={onClose} aria-label="Закрыть панель pod" title="Закрыть">×</button>
         </div>
 
         <div className={styles.summary}>
-          {detail.isLoading && <div className={styles.loading}>Загрузка Pod…</div>}
-          {detail.isError && <div className={styles.error}>Не удалось загрузить Pod: {detail.error?.message}</div>}
-          {data && <>
+          {!browsingOtherScope && detail.isLoading && <div className={styles.loading}>Загрузка Pod…</div>}
+          {!browsingOtherScope && detail.isError && <div className={styles.error}>Не удалось загрузить Pod: {detail.error?.message}</div>}
+          {!browsingOtherScope && data && <>
             <div className={styles.badges}><span className={`${styles.statusBadge} ${statusClass}`}><i />{data.status}</span></div>
-            <div className={styles.infoGrid}>
-              <div><span>Кластер</span><b>{pod.clusterName}</b></div><div><span>Namespace</span><b>{pod.namespace}</b></div><div className={styles.ageInfo}><span>Возраст</span><b>{age(data.creationTimestamp)}</b></div>
-            </div>
+          </>}
+          <div className={styles.infoGrid}>
+            <label><span>Кластер</span><select aria-label="Кластер Pod" value={browseClusterId} onChange={(event) => {
+              const nextCluster = groups.find((group) => group.cluster.id === event.target.value);
+              setBrowseClusterId(event.target.value);
+              setBrowseNamespace(nextCluster?.namespaces.some((item) => item.name === browseNamespace) ? browseNamespace : nextCluster?.namespaces[0]?.name ?? '');
+            }}>
+              {!groups.some((group) => group.cluster.id === browseClusterId) && <option value={browseClusterId}>{pod.clusterName}</option>}
+              {groups.map((group) => <option key={group.cluster.id} value={group.cluster.id}>{group.cluster.name}</option>)}
+            </select></label>
+            <label><span>Namespace</span><select aria-label="Namespace Pod" value={browseNamespace} onChange={(event) => setBrowseNamespace(event.target.value)} disabled={!browseGroup || browseGroup.isLoading}>
+              {browseNamespace && !browseGroup?.namespaces.some((item) => item.name === browseNamespace) && <option value={browseNamespace}>{browseNamespace}</option>}
+              {!browseNamespace && <option value="">{browseGroup?.isLoading ? 'Загрузка…' : 'Нет namespaces'}</option>}
+              {browseGroup?.namespaces.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
+            </select></label>
+            <label className={styles.podPicker}><span>Deployment / Pod</span><select aria-label="Deployment и Pod" value={browsingOtherScope ? '' : pod.podName} onChange={(event) => selectPod(event.target.value)} disabled={!browseNamespace || availablePods.isFetching}>
+              {browsingOtherScope && <option value="">{availablePods.isFetching ? 'Загрузка Pods…' : sortedPods.length ? 'Выберите Pod' : 'Нет Pods'}</option>}
+              {!browsingOtherScope && !sortedPods.some((item) => item.name === pod.podName) && <option value={pod.podName}>{pod.podName}</option>}
+              {groupedPods.map(({ deployment, pods }) => <optgroup key={deployment.uid} label={deployment.name}>
+                {pods.length ? pods.map((item) => <option key={item.uid} value={item.name}>{item.name}</option>) : <option disabled value={`empty:${deployment.uid}`}>Нет Pods</option>}
+              </optgroup>)}
+              {ungroupedPods.length > 0 && <optgroup label="Pods без Deployment">{ungroupedPods.map((item) => <option key={item.uid} value={item.name}>{item.name}</option>)}</optgroup>}
+            </select></label>
+            <div className={styles.ageInfo}><span>Возраст</span><b>{!browsingOtherScope && data ? age(data.creationTimestamp) : '—'}</b></div>
+          </div>
+          {browsingOtherScope && browseGroup?.error && <div className={styles.error}>Не удалось загрузить namespaces: {browseGroup.error.message}</div>}
+          {browsingOtherScope && availablePods.isError && <div className={styles.error}>Не удалось загрузить Pods: {availablePods.error?.message}</div>}
+          {browsingOtherScope && !availablePods.isFetching && !availablePods.isError && browseNamespace && sortedPods.length === 0 && <div className={styles.loading}>В этом namespace нет Pods. Выберите другой namespace.</div>}
+          {!browsingOtherScope && data && <>
             <div className={styles.actions}>
-              <button onClick={() => setConfirmRequest({
-                title: 'Перезапуск Pod',
-                description: `Pod ${pod.podName} будет удалён, после чего контроллер сможет создать новый экземпляр.`,
-                confirmLabel: 'Перезапустить Pod',
+              <button onClick={() => {
+                const target = { clusterId: pod.clusterId, clusterName: pod.clusterName, namespace: pod.namespace, name: pod.podName, uid: data.uid, mode: data.hasController ? 'restart' as const : 'delete' as const };
+                setConfirmRequest({
+                title: data.hasController ? 'Перезапуск Pod' : 'Удаление Pod без контроллера',
+                description: data.hasController
+                  ? `Pod ${target.name} (${target.clusterName} / ${target.namespace}) будет удалён. Контроллер создаст новый экземпляр; возможны простой и потеря временных данных.`
+                  : `Pod ${target.name} (${target.clusterName} / ${target.namespace}) не имеет контроллера и будет удалён без восстановления. Возможна потеря данных.`,
+                confirmLabel: data.hasController ? 'Перезапустить Pod' : 'Удалить Pod',
                 onConfirm: async () => {
-                  await remove.mutateAsync();
-                  queryClient.setQueryData<Pod[]>(['pods', pod.clusterId, pod.namespace], (current) =>
-                    current?.map((item) => item.name === pod.podName ? { ...item, status: 'Failed', terminating: true } : item)
+                  await remove.mutateAsync(target);
+                  queryClient.setQueryData<Pod[]>(['pods', target.clusterId, target.namespace], (current) =>
+                    current?.map((item) => item.uid === target.uid ? { ...item, status: 'Failed', terminating: true } : item)
                   );
-                  await queryClient.invalidateQueries({ queryKey: ['pods', pod.clusterId, pod.namespace] });
-                  onClose();
+                  await queryClient.invalidateQueries({ queryKey: ['pods', target.clusterId, target.namespace] });
+                  setMessage(target.mode === 'restart' ? 'Kubernetes принял запрос на удаление Pod. Ожидается создание нового экземпляра контроллером; следите за списком Pods.' : 'Kubernetes принял запрос на удаление Pod без контроллера. Автоматическое восстановление не ожидается.');
+                  void detail.refetch();
                 }
-              })}>Перезапустить</button>
+              });
+              }}>{data.hasController ? 'Перезапустить' : 'Удалить Pod'}</button>
             </div>
           </>}
-          {message && <div className={styles.message}>{message}</div>}
+          {!browsingOtherScope && message && <div className={styles.message}>{message}</div>}
         </div>
 
-        <nav className={styles.tabs}>
+        {!browsingOtherScope && <nav className={styles.tabs}>
           {(['logs','exec','describe','yaml','metrics','events','containers'] as Tab[]).map((item) => (
             <button key={item} className={tab === item ? styles.active : ''} onClick={() => setTab(item)}>
               {item === 'logs' ? 'Логи' : item === 'exec' ? 'Консоль Pod' : item === 'describe' ? 'Статус Pod' : item === 'yaml' ? 'YAML' : item === 'metrics' ? 'Метрики' : item === 'events' ? `События${events.data?.length ? ` ${events.data.length}` : ''}` : 'Контейнеры'}
             </button>
           ))}
-        </nav>
+        </nav>}
 
-        <div className={styles.content}>
+        {!browsingOtherScope && <div className={styles.content}>
           {tab === 'logs' && <div className={styles.tabFill}>
             <div className={styles.toolbar}>
               <div>
@@ -294,16 +390,22 @@ export function PodPanel({ pod, onClose }: Props) {
             <section className={styles.describe}><h3>Состояния</h3>{data.conditions.map((item) => <div className={styles.condition} key={item.type}><b>{item.type}:</b><span className={item.status === 'True' ? styles.good : ''}>{item.status}</span><span>{item.reason ?? ''}</span><span>{item.message ?? ''}</span></div>)}</section>
           </div>}
 
-          {tab === 'yaml' && <div className={styles.tabFill}><div className={styles.yamlToolbar}><span /><button onClick={() => setConfirmRequest({
+          {tab === 'yaml' && <div className={styles.tabFill}><div className={styles.yamlToolbar}><span /><button onClick={() => {
+            let resource: unknown;
+            try { resource = JSON.parse(resourceText); } catch { setMessage('Не удалось распознать JSON документа Pod.'); return; }
+            const target = { clusterId: pod.clusterId, namespace: pod.namespace, name: pod.podName, resource };
+            setConfirmRequest({
             title: 'Сохранение YAML',
-            description: `Изменения YAML Pod ${pod.podName} будут отправлены в кластер. Часть полей Kubernetes может отклонить как неизменяемые.`,
+            description: `Изменения YAML Pod ${target.name} (${pod.clusterName} / ${target.namespace}) будут отправлены в кластер. Часть полей Kubernetes может отклонить как неизменяемые.`,
             confirmLabel: 'Сохранить YAML',
             onConfirm: async () => {
-              await replace.mutateAsync();
+              await replace.mutateAsync(target);
+              setResourceDirty(false);
               setMessage('Ресурс Pod сохранён. Kubernetes может отклонить изменения immutable-полей.');
               await detail.refetch();
             }
-          })}>Сохранить</button></div><CodeEditor value={resourceText} onChange={setResourceText} /></div>}
+          });
+          }}>Сохранить</button></div><CodeEditor value={resourceText} onChange={(value) => { setResourceText(value); setResourceDirty(true); }} /></div>}
 
           {tab === 'metrics' && <div className={styles.metricsPane}>
             <div className={styles.metricsToolbar}><div><b>Метрики Pod</b><div className={styles.metricSources}><span className={`${styles.metricSource} ${metrics.data?.source === 'metrics-api' ? styles.sourcePrimary : metrics.data?.source === 'kubelet' ? styles.sourceFallback : styles.sourceUnavailable}`}>CPU/RAM: {metrics.data?.source === 'metrics-api' ? 'Metrics API' : metrics.data?.source === 'kubelet' ? 'kubelet fallback' : 'нет данных'}</span><span className={`${styles.metricSource} ${metrics.data?.throttlingAvailable ? styles.sourceSecondary : styles.sourceUnavailable}`}>Throttling: {metrics.data?.throttlingAvailable ? 'cAdvisor' : 'нет данных'}</span>{metrics.data?.window && <span className={styles.metricWindow}>Окно: {metrics.data.window}</span>}</div></div><div className={styles.metricMode}><button className={metricMode === 'percent' ? styles.activeMode : ''} onClick={() => setMetricMode('percent')}>%</button><button className={metricMode === 'actual' ? styles.activeMode : ''} onClick={() => setMetricMode('actual')}>Фактические</button></div></div>
@@ -322,7 +424,7 @@ export function PodPanel({ pod, onClose }: Props) {
           {tab === 'events' && <div className={styles.eventsWrap}><table className={styles.events}><thead><tr><th>Тип</th><th>Причина</th><th>Сообщение</th><th>Источник</th><th>Дата</th><th>Кол-во</th></tr></thead><tbody>{events.data?.map((item, index) => <tr key={`${item.reason}-${item.time}-${index}`}><td><span className={`${styles.eventType} ${item.type.toLowerCase() === 'warning' ? styles.eventWarning : styles.eventNormal}`}>{item.type}</span></td><td>{item.reason}</td><td>{item.message}</td><td>{item.source}</td><td>{item.time ? formatDate(item.time) : '—'}</td><td>{item.count}</td></tr>)}</tbody></table>{events.isLoading && <div className={styles.loading}>Загрузка событий…</div>}</div>}
 
           {tab === 'containers' && <div className={styles.containers}>{data?.containers.map((item) => <div className={styles.containerCard} key={item.name}><div className={styles.containerHeader}><b>{item.name}</b><span className={`${styles.statusBadge} ${item.ready ? styles.running : styles.pending}`}><i />{item.state}</span></div><dl><dt>Образ</dt><dd>{item.image}</dd><dt>Порты</dt><dd>{item.ports.join(', ') || '—'}</dd><dt>CPU</dt><dd>{item.cpuRequest ?? '—'} / {item.cpuLimit ?? '—'}</dd><dt>Память</dt><dd>{item.memoryRequest ?? '—'} / {item.memoryLimit ?? '—'}</dd><dt>Рестарты</dt><dd>{item.restartCount}</dd></dl><div className={styles.containerActions}><button onClick={() => { setContainer(item.name); setTab('logs'); }}>Логи</button><button onClick={() => { setContainer(item.name); setTab('exec'); }}>Консоль Pod</button></div></div>)}</div>}
-        </div>
+        </div>}
       </aside>
       <ActionConfirmModal request={confirmRequest} onClose={() => setConfirmRequest(null)} />
     </>

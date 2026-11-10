@@ -1,0 +1,33 @@
+import { DatabaseSync } from 'node:sqlite';
+import { chmodSync, copyFileSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+const args = process.argv.slice(2);
+const option = (name) => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : undefined; };
+const storePath = resolve(option('--store') ?? 'data/clusters.json');
+const databasePath = resolve(option('--db') ?? 'data/users.sqlite');
+const mappingPath = option('--mapping');
+if (!mappingPath) throw new Error('Usage: node scripts/migrate-cluster-owners.mjs --mapping owners.json [--store data/clusters.json] [--db data/users.sqlite]');
+const mapping = JSON.parse(readFileSync(resolve(mappingPath), 'utf8'));
+if (!mapping || typeof mapping !== 'object' || Array.isArray(mapping)) throw new Error('Mapping must be an object: {"cluster-id":"username"}.');
+const store = JSON.parse(readFileSync(storePath, 'utf8'));
+if (store.version !== 1 || !Array.isArray(store.clusters)) throw new Error('Cluster store is not v1; no changes made.');
+const db = new DatabaseSync(databasePath, { readOnly: true });
+const users = db.prepare('SELECT id,username FROM users').all();
+db.close();
+const ownerFor = (cluster) => {
+  const username = mapping[cluster.id];
+  if (typeof username !== 'string') throw new Error(`Missing owner for cluster id ${cluster.id}.`);
+  const user = users.find((item) => item.username.toLocaleLowerCase() === username.toLocaleLowerCase());
+  if (!user) throw new Error(`Owner '${username}' for cluster id ${cluster.id} does not exist.`);
+  return user.id;
+};
+const clusters = store.clusters.map((cluster) => ({ ...cluster, ownerId: ownerFor(cluster) }));
+const backup = `${storePath}.v1-backup-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+copyFileSync(storePath, backup);
+chmodSync(backup, 0o600);
+const temporary = `${storePath}.migration-tmp`;
+writeFileSync(temporary, `${JSON.stringify({ version: 2, clusters }, null, 2)}\n`, { mode: 0o600 });
+renameSync(temporary, storePath);
+chmodSync(storePath, 0o600);
+console.log(`Assigned ${clusters.length} clusters to explicit owners; backup: ${backup}`);

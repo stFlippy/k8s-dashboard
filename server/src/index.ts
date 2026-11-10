@@ -38,7 +38,6 @@ const server = createServer(async (request: IncomingMessage, response: ServerRes
     if (url.pathname.startsWith('/api/')) {
       auth = getRequestSession(request);
       if (!auth) { response.statusCode=401;response.setHeader('Content-Type','application/json; charset=utf-8');response.end(JSON.stringify({error:'Authentication required.'}));return; }
-      if (auth.user.mustChangePassword) { response.statusCode=403;response.setHeader('Content-Type','application/json; charset=utf-8');response.end(JSON.stringify({error:'Password change required.'}));return; }
       if (request.method !== 'GET' && request.headers['x-csrf-token'] !== auth.csrf) { response.statusCode=403;response.setHeader('Content-Type','application/json; charset=utf-8');response.end(JSON.stringify({error:'Invalid CSRF token.'}));return; }
     }
     const handled = auth

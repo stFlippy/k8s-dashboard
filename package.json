@@ -7,12 +7,14 @@
     "dev": "node scripts/dev.mjs",
     "dev:client": "npm --prefix client run dev",
     "dev:server": "npm --prefix server run dev",
+    "dev:auth": "npm --prefix auth_server run dev",
     "build": "npm --prefix client run build && npm --prefix server run build",
     "build:standalone": "node scripts/build-standalone.mjs",
     "start": "npm --prefix server run start",
     "typecheck": "npm --prefix client run typecheck && npm --prefix server run typecheck",
-    "install:all": "npm install --prefix client && npm install --prefix server",
-    "check": "node scripts/check-project.mjs && npm run typecheck"
+    "install:all": "npm install --prefix client && npm install --prefix server && npm install --prefix auth_server",
+    "test": "node --experimental-strip-types --test server/src/**/*.test.ts && npm --prefix auth_server run test",
+    "check": "node scripts/check-project.mjs && npm run typecheck && npm run test"
   },
   "engines": {
     "node": ">=22.20.0",

@@ -1,7 +1,32 @@
 import { useEffect, useState } from 'react';
-import { createUser, getUsers, resetUserPassword } from '../../api/auth';
+import { getUsers, setUserAdministrator } from '../../api/auth';
 import type { UserAccount } from '../../types/kubernetes';
 import { ActionConfirmModal } from '../common/ActionConfirmModal';
 import type { ActionConfirmRequest } from '../common/ActionConfirmModal';
 import styles from './UserManagement.module.css';
-export function UserManagement(){const[users,setUsers]=useState<UserAccount[]>([]);const[username,setUsername]=useState('');const[message,setMessage]=useState('');const[credential,setCredential]=useState<{username:string;password:string}|null>(null);const[confirm,setConfirm]=useState<ActionConfirmRequest|null>(null);const load=async()=>{try{setUsers(await getUsers());}catch(e){setMessage(e instanceof Error?e.message:'Не удалось загрузить пользователей.');}};useEffect(()=>{void load();},[]);const requestAdd=()=>{const name=username.trim();if(!name)return;if(users.some((user)=>user.username.toLocaleLowerCase()===name.toLocaleLowerCase())){setMessage(`Пользователь «${name}» уже существует.`);return;}setConfirm({title:'Добавление пользователя',description:`Будет создан пользователь «${name}» с автоматически сгенерированным временным паролем.`,confirmLabel:'Добавить пользователя',onConfirm:async()=>{const result=await createUser(name);setCredential({username:result.user.username,password:result.temporaryPassword});setUsername('');await load();}});};const requestReset=(user:UserAccount)=>setConfirm({title:'Сброс пароля',description:`Для пользователя «${user.username}» будет создан новый временный пароль, а все активные сессии будут закрыты.`,confirmLabel:'Сбросить пароль',onConfirm:async()=>{const result=await resetUserPassword(user.id);setCredential({username:user.username,password:result.temporaryPassword});await load();}});return <section className={styles.root}><div className={styles.create}><input value={username} onChange={(e)=>setUsername(e.target.value)} placeholder="Имя пользователя"/><button onClick={requestAdd} disabled={!username.trim()}>Добавить</button></div>{credential&&<div className={styles.credential}><b>Временный пароль для {credential.username}</b><code>{credential.password}</code><button onClick={()=>navigator.clipboard.writeText(credential.password)}>Копировать</button><small>Пароль показывается только сейчас. Передайте его пользователю безопасным способом.</small></div>}{users.map((user)=><div className={styles.user} key={user.id}><span><b>{user.username}</b><small>{user.mustChangePassword?'Ожидается смена пароля':'Активен'}</small></span><button onClick={()=>requestReset(user)}>Сбросить пароль</button></div>)}{message&&<div className={styles.message}>{message}</div>}<ActionConfirmModal request={confirm} onClose={()=>setConfirm(null)}/></section>}
+
+export function UserManagement({ currentUserId }: { currentUserId: string }) {
+  const [users, setUsers] = useState<UserAccount[]>([]);
+  const [message, setMessage] = useState('');
+  const [confirm, setConfirm] = useState<ActionConfirmRequest | null>(null);
+  const load = async () => {
+    try { setUsers(await getUsers()); }
+    catch (error) { setMessage(error instanceof Error ? error.message : 'Не удалось загрузить пользователей.'); }
+  };
+  useEffect(() => { void load(); }, []);
+  const requestRole = (user: UserAccount) => setConfirm({
+    title: 'Права администратора',
+    description: `${user.isAdmin ? 'Отозвать права администратора' : 'Назначить администратором'} пользователя «${user.username}»? Его текущие сессии будут закрыты.`,
+    confirmLabel: user.isAdmin ? 'Отозвать права' : 'Назначить',
+    onConfirm: async () => { await setUserAdministrator(user.id, !user.isAdmin); await load(); }
+  });
+  return <section className={styles.root}>
+    <p>Пользователи появляются здесь после первого успешного входа через внешний сервер авторизации. Пароли меняются на том сервере.</p>
+    {users.map((user) => <div className={styles.user} key={user.id}>
+      <span><b>{user.username}</b><small>{user.isAdmin ? 'Администратор' : 'Пользователь'}</small></span>
+      <button onClick={() => requestRole(user)} disabled={user.id === currentUserId && user.isAdmin}>{user.isAdmin ? 'Снять права' : 'Сделать администратором'}</button>
+    </div>)}
+    {message && <div className={styles.message}>{message}</div>}
+    <ActionConfirmModal request={confirm} onClose={() => setConfirm(null)} />
+  </section>;
+}

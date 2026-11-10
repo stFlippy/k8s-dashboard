@@ -3,7 +3,6 @@ import type {
   Cluster,
   ClusterInput,
   ClusterTestResult,
-  ClusterHealth,
   ConfigMap,
   Deployment,
   DeploymentDetail,
@@ -30,7 +29,6 @@ export const testClusterInput = (input: ClusterInput, existingId?: string) => ap
 export const loginClusters = (clusterIds: string[], password: string) => apiSend<Cluster[]>('/api/clusters/login', 'POST', { clusterIds, password });
 
 export const getNamespaces = (clusterId: string) => apiGet<Namespace[]>(`/api/namespaces?${scope(clusterId)}`);
-export const getClusterHealth = (clusterId: string) => apiGet<ClusterHealth>(`/api/cluster-health?${scope(clusterId)}`);
 export const getDeployments = (clusterId: string, namespace: string) => apiGet<Deployment[]>(`/api/deployments?${scope(clusterId, namespace)}`);
 export const getPods = (clusterId: string, namespace: string) => apiGet<Pod[]>(`/api/pods?${scope(clusterId, namespace)}`);
 export const getResourceQuotas = (clusterId: string, namespace: string) => apiGet<ResourceQuota[]>(`/api/resource-quotas?${scope(clusterId, namespace)}`);
@@ -43,6 +41,7 @@ export const getDeploymentEvents = (clusterId: string, namespace: string, name: 
 export const setDeploymentReplicas = (clusterId: string, namespace: string, name: string, replicas: number) => apiSend<DeploymentDetail>(`/api/deployments/${q(name)}/replicas?${scope(clusterId, namespace)}`, 'PUT', { replicas });
 export const restartDeployment = (clusterId: string, namespace: string, name: string) => apiSend<DeploymentDetail>(`/api/deployments/${q(name)}/restart?${scope(clusterId, namespace)}`, 'POST', {});
 export const updateDeploymentResources = (clusterId: string, namespace: string, name: string, input: DeploymentResourcesInput) => apiSend<DeploymentDetail>(`/api/deployments/${q(name)}/resources?${scope(clusterId, namespace)}`, 'PUT', input);
+export const previewDeploymentResources = (clusterId: string, namespace: string, name: string, input: DeploymentResourcesInput) => apiSend<{ resourceVersion: string | null; diff: Record<string, { from: string | null; to: string | null }>; warning: string }>(`/api/deployments/${q(name)}/resources/preview?${scope(clusterId, namespace)}`, 'POST', input);
 export const replaceDeploymentResource = (clusterId: string, namespace: string, name: string, resource: unknown) => apiSend<DeploymentDetail>(`/api/deployments/${q(name)}?${scope(clusterId, namespace)}`, 'PUT', { resource });
 export const removeDeployment = (clusterId: string, namespace: string, name: string) => apiDelete(`/api/deployments/${q(name)}?${scope(clusterId, namespace)}`);
 
@@ -60,4 +59,4 @@ export const execPod = (clusterId: string, namespace: string, name: string, cont
 export const getPodMetrics = (clusterId: string, namespace: string, name: string) => apiGet<PodMetrics>(`/api/pods/${q(name)}/metrics?${scope(clusterId, namespace)}`);
 export const getPodEvents = (clusterId: string, namespace: string, name: string) => apiGet<PodEvent[]>(`/api/pods/${q(name)}/events?${scope(clusterId, namespace)}`);
 export const replacePodResource = (clusterId: string, namespace: string, name: string, resource: unknown) => apiSend<PodDetail>(`/api/pods/${q(name)}?${scope(clusterId, namespace)}`, 'PUT', { resource });
-export const removePod = (clusterId: string, namespace: string, name: string) => apiDelete(`/api/pods/${q(name)}?${scope(clusterId, namespace)}`);
+export const removePod = (clusterId: string, namespace: string, name: string, uid: string, mode: 'restart' | 'delete') => apiDelete(`/api/pods/${q(name)}?${scope(clusterId, namespace)}&uid=${q(uid)}&mode=${mode}`);

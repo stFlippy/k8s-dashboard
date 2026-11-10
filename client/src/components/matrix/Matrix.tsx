@@ -8,7 +8,6 @@ import type { Deployment, Pod, PodRef, PodStatus, WorkloadRef } from '../../type
 import { ActionConfirmModal } from '../common/ActionConfirmModal';
 import type { ActionConfirmRequest } from '../common/ActionConfirmModal';
 import styles from './Matrix.module.css';
-import { clusterAlias, readClusterAliases } from '../../utils/clusterAliases';
 import { createLocalId } from '../../utils/localId';
 
 interface Props {
@@ -28,7 +27,10 @@ interface Column {
 interface MatrixTableStyle extends CSSProperties {
   '--deployment-column-width': string;
   '--namespace-header-height': string;
+  '--namespace-column-width': string;
 }
+
+const namespaceColumnWidth = 48;
 
 interface MatrixView {
   id: string;
@@ -56,7 +58,7 @@ const refreshOptions: Array<{ label: string; value: number | false }> = [
   { label: '5 мин', value: 5 * 60_000 },
 ];
 
-const easterEggQuery = 'йцукенqwerty';
+const easterEggQuery = 'hollyeggs';
 const dancingCatFrames = [
   [' /\\_/\\', '( o.o )', ' > ^ <', '  /|\\', ' / | \\'].join('\n'),
   [' /\\_/\\', '( o.o )', ' > ^ <', '  /|\\ ', ' / |  '].join('\n'),
@@ -126,7 +128,7 @@ function statusMatches(pod: Pod, filters: Record<FilterStatus, boolean>): boolea
   if (pod.status === 'Pending') return filters.Pending;
   if (pod.status === 'Failed') return filters.Failed;
   if (pod.status === 'Unknown') return filters.Unknown;
-  return false;
+  return true;
 }
 
 function matchesSelectedFilters(
@@ -184,7 +186,6 @@ export function Matrix({ onOpenDeployment, onOpenPod, onClustersUnauthorized }: 
   const [tabMenu, setTabMenu] = useState<{ x: number; y: number; viewId: string } | null>(null);
   const [dragTarget, setDragTarget] = useState<{ type: 'namespace' | 'deployment'; target: string; side: 'before' | 'after' } | null>(null);
   const [draggedViewId, setDraggedViewId] = useState<string | null>(null);
-  const [aliases, setAliases] = useState<Record<string, string>>(() => readClusterAliases());
   const [catFrame, setCatFrame] = useState(0);
   const [hovered, setHovered] = useState<{ row: string; column: string } | null>(null);
   const [context, setContext] = useState<{ x: number; y: number; pod: Pod; column: Column; deploymentName: string } | null>(null);
@@ -225,12 +226,6 @@ export function Matrix({ onOpenDeployment, onOpenPod, onClustersUnauthorized }: 
     return () => document.removeEventListener('pointerdown', closeOnOutsidePointer);
   }, []);
 
-  useEffect(() => {
-    const updateAliases = () => setAliases(readClusterAliases());
-    window.addEventListener('storage', updateAliases);
-    window.addEventListener('quaber-cluster-aliases', updateAliases);
-    return () => { window.removeEventListener('storage', updateAliases); window.removeEventListener('quaber-cluster-aliases', updateAliases); };
-  }, []);
 
   useEffect(() => {
     if (!easterEggActive) {
@@ -313,7 +308,8 @@ export function Matrix({ onOpenDeployment, onOpenPod, onClustersUnauthorized }: 
     const filtered = !hideFilteredNamespaces ? scopedColumns : scopedColumns.filter((column) => {
       const index = allColumns.findIndex((item) => item.clusterId === column.clusterId && item.namespace === column.namespace);
       const pods = podQueries[index]?.data ?? [];
-      return pods.some((pod) => matchesSelectedFilters(
+      const deployments = deploymentQueries[index]?.data ?? [];
+      return deployments.some((deployment) => deployment.replicas === 0) || pods.some((pod) => matchesSelectedFilters(
         pod,
         filters,
         recentRestartFilter,
@@ -326,7 +322,7 @@ export function Matrix({ onOpenDeployment, onOpenPod, onClustersUnauthorized }: 
       if (li < 0 && ri < 0) return leftKey.localeCompare(rightKey);
       if (li < 0) return 1; if (ri < 0) return -1; return li - ri;
     });
-  }, [allColumns, filters, hideFilteredNamespaces, namespaceOrder, podQueries, problemOnly, recentRestartFilter, selectedClusters, selectedNamespaces]);
+  }, [allColumns, deploymentQueries, filters, hideFilteredNamespaces, namespaceOrder, podQueries, problemOnly, recentRestartFilter, selectedClusters, selectedNamespaces]);
 
   const rows = useMemo(() => {
     const rowMap = new Map<string, Map<string, Pod[]>>();
@@ -338,36 +334,25 @@ export function Matrix({ onOpenDeployment, onOpenPod, onClustersUnauthorized }: 
         if (!rowMap.has(deployment.name)) rowMap.set(deployment.name, new Map());
         rowMap.get(deployment.name)?.set(
           `${column.clusterId}/${column.namespace}`,
-          pods.filter((pod) => pod.name.startsWith(`${deployment.name}-`))
+          pods.filter((pod) => Boolean(deployment.uid) && pod.ownerDeploymentUid === deployment.uid)
         );
       }
     });
 
     return [...rowMap.entries()]
-      .map(([deploymentName, cells]) => ({
-        deploymentName,
-        cells,
-        hasVisiblePods: visibleColumns.some((column) => {
-          const pods = cells.get(`${column.clusterId}/${column.namespace}`) ?? [];
-          return pods.some((pod) => matchesSelectedFilters(
-            pod,
-            filters,
-            recentRestartFilter,
-            problemOnly
-          ));
-        })
-      }))
-      .filter((row) => row.hasVisiblePods)
+      .map(([deploymentName, cells]) => ({ deploymentName, cells }))
       .filter((row) => selectedDeployments === null || selectedDeployments.includes(row.deploymentName))
       .sort((left, right) => { const li = deploymentOrder.indexOf(left.deploymentName); const ri = deploymentOrder.indexOf(right.deploymentName); if (li < 0 && ri < 0) return left.deploymentName.localeCompare(right.deploymentName); if (li < 0) return 1; if (ri < 0) return -1; return li - ri; });
-  }, [allColumns, deploymentOrder, deploymentQueries, filters, podQueries, problemOnly, recentRestartFilter, selectedDeployments, visibleColumns]);
+  }, [allColumns, deploymentOrder, deploymentQueries, podQueries, selectedDeployments, visibleColumns]);
 
   const totals = useMemo(() => {
     const counts: Record<PodStatus, number> = {
       Running: 0,
       Pending: 0,
       Failed: 0,
-      Unknown: 0
+      Unknown: 0,
+      Completed: 0,
+      Terminating: 0
     };
     for (const query of podQueries) {
       for (const pod of query.data ?? []) counts[pod.status] += 1;
@@ -389,20 +374,25 @@ export function Matrix({ onOpenDeployment, onOpenPod, onClustersUnauthorized }: 
     : '—';
 
   const deleteMutation = useMutation({
-    mutationFn: ({ pod, column }: { pod: Pod; column: Column }) => removePod(column.clusterId, column.namespace, pod.name),
+    mutationFn: ({ pod, column }: { pod: Pod; column: Column }) => removePod(column.clusterId, column.namespace, pod.name, pod.uid, pod.hasController ? 'restart' : 'delete'),
     onSuccess: async (_data, vars) => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['pods', vars.column.clusterId, vars.column.namespace] }),
         queryClient.invalidateQueries({ queryKey: ['deployments', vars.column.clusterId, vars.column.namespace] })
       ]);
+      setViewMessage(`Kubernetes принял запрос на ${vars.pod.hasController ? 'перезапуск' : 'удаление'} Pod ${vars.pod.name} в ${vars.column.clusterName} / ${vars.column.namespace}. Следите за состоянием в таблице.`);
     }
   });
 
   const namespaceErrors = groups.filter((group) => group.error);
-  const unauthorizedClusterIds = namespaceErrors
-    .filter((group) => group.cluster.authType === 'kubectl-login' && /(?:HTTP-Code:\s*401|\b401\b|Unauthorized)/i.test(group.error?.message ?? ''))
-    .map((group) => group.cluster.id)
-    .sort();
+  const workloadErrors = allColumns.flatMap((column, index) => [
+    podQueries[index]?.isError ? { clusterId: column.clusterId, label: `${column.clusterName}/${column.namespace} Pods`, message: podQueries[index].error?.message ?? '' } : null,
+    deploymentQueries[index]?.isError ? { clusterId: column.clusterId, label: `${column.clusterName}/${column.namespace} Deployments`, message: deploymentQueries[index].error?.message ?? '' } : null
+  ].filter((item): item is { clusterId: string; label: string; message: string } => Boolean(item)));
+  const unauthorizedClusterIds = [...new Set([
+    ...namespaceErrors.filter((group) => group.cluster.authType === 'kubectl-login' && /(?:HTTP-Code:\s*401|\b401\b|Unauthorized)/i.test(group.error?.message ?? '')).map((group) => group.cluster.id),
+    ...workloadErrors.filter((item) => /(?:HTTP-Code:\s*401|\b401\b|Unauthorized)/i.test(item.message)).map((item) => item.clusterId)
+  ])].sort();
   const unauthorizedSignature = unauthorizedClusterIds.join(',');
   useEffect(() => {
     if (unauthorizedClusterIds.length) onClustersUnauthorized?.(unauthorizedClusterIds);
@@ -410,6 +400,7 @@ export function Matrix({ onOpenDeployment, onOpenPod, onClustersUnauthorized }: 
   const namespaceErrorText = namespaceErrors
     .filter((group) => !unauthorizedClusterIds.includes(group.cluster.id))
     .map((group) => `${group.cluster.name}: ${group.error?.message}`)
+    .concat(workloadErrors.filter((item) => !unauthorizedClusterIds.includes(item.clusterId)).map((item) => `${item.label}: ${item.message}`))
     .join(' · ');
   if (clustersLoading) return <div className={styles.state}>Загрузка кластеров Kubernetes…</div>;
   if (clustersError) return <div className={styles.stateError}>Не удалось загрузить кластеры: {clustersError.message}</div>;
@@ -442,7 +433,10 @@ export function Matrix({ onOpenDeployment, onOpenPod, onClustersUnauthorized }: 
     ]);
   };
 
-  const totalPods = totals.Running + totals.Pending + totals.Failed + totals.Unknown;
+  const totalPods = rows.reduce((sum, row) => sum + visibleColumns.reduce((columnTotal, column) => {
+    const pods = row.cells.get(`${column.clusterId}/${column.namespace}`) ?? [];
+    return columnTotal + pods.filter((pod) => matchesSelectedFilters(pod, filters, recentRestartFilter, problemOnly)).length;
+  }, 0), 0);
 
   const startDeploymentColumnResize = (event: ReactPointerEvent<HTMLElement>) => {
     event.preventDefault();
@@ -464,7 +458,7 @@ export function Matrix({ onOpenDeployment, onOpenPod, onClustersUnauthorized }: 
   const startNamespaceHeaderResize = (event: ReactPointerEvent<HTMLElement>) => {
     event.preventDefault(); event.stopPropagation();
     const startY = event.clientY; const startHeight = namespaceHeaderHeight;
-    const resize = (moveEvent: PointerEvent) => setNamespaceHeaderHeight(Math.max(110, Math.min(360, startHeight + moveEvent.clientY - startY)));
+    const resize = (moveEvent: PointerEvent) => setNamespaceHeaderHeight(Math.max(54, Math.min(360, startHeight + moveEvent.clientY - startY)));
     const stop = () => { document.removeEventListener('pointermove', resize); document.removeEventListener('pointerup', stop); };
     document.addEventListener('pointermove', resize); document.addEventListener('pointerup', stop, { once: true });
   };
@@ -488,7 +482,8 @@ export function Matrix({ onOpenDeployment, onOpenPod, onClustersUnauthorized }: 
     setViewMessage(''); setViewEditor(null);
   };
   const requestRemoveView = (viewId: string) => { const current = views.find((view) => view.id === viewId); if (!current || views.length <= 1) return; setTabMenu(null); setConfirmRequest({ title: 'Удаление вкладки', description: `Вкладка «${current.name}» и сохранённые в ней фильтры и порядок элементов будут удалены.`, confirmLabel: 'Удалить вкладку', onConfirm: () => { const next = views.filter((view) => view.id !== viewId); setViews(next); if (activeViewId === viewId) applyView(next[0]); } }); };
-  const exportViews = (exportedViews: MatrixView[] = views) => {
+  const exportViews = () => {
+    const exportedViews = views;
     const requiredIds = new Set(exportedViews.flatMap((view) => view.selectedClusterIds ?? groups.map((group) => group.cluster.id)));
     const requiredClusters = groups.filter((group) => requiredIds.has(group.cluster.id)).map((group) => ({ id: group.cluster.id, name: group.cluster.name }));
     const blob = new Blob([JSON.stringify({ format: 'quaber-matrix-views', version: 1, requiredClusters, views: exportedViews }, null, 2)], { type: 'application/json' });
@@ -540,7 +535,7 @@ export function Matrix({ onOpenDeployment, onOpenPod, onClustersUnauthorized }: 
         <div className={styles.viewTabs}>
           <div className={styles.viewTabList}>{views.map((view) => <button draggable type="button" key={view.id} style={{ '--tab-color': view.color ?? 'transparent' } as CSSProperties} className={`${view.id === activeViewId ? styles.activeViewTab : ''} ${draggedViewId === view.id ? styles.draggedViewTab : ''}`} onDragStart={(event) => { event.dataTransfer.effectAllowed='move';setDraggedViewId(view.id); }} onDragEnd={() => setDraggedViewId(null)} onDragOver={(event) => { event.preventDefault();event.dataTransfer.dropEffect='move'; }} onDrop={(event) => { event.preventDefault();moveView(view.id); }} onClick={() => applyView(view)} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setTabMenu({ x: event.clientX, y: event.clientY, viewId: view.id }); }}>{view.name}</button>)}<button type="button" className={styles.addViewTab} onClick={addView} title="Добавить вкладку">＋</button></div>
           {viewMessage && <div className={styles.viewMessage}><span>{viewMessage}</span><button type="button" onClick={() => setViewMessage('')} aria-label="Закрыть уведомление" title="Закрыть">×</button></div>}
-          <div className={styles.viewActions}><button type="button" onClick={() => importRef.current?.click()}>Импорт</button><input ref={importRef} hidden type="file" accept="application/json,.json" onChange={(event) => { void importViews(event); }} /></div>
+          <div className={styles.viewActions}><button type="button" onClick={exportViews}>Экспорт</button><button type="button" onClick={() => importRef.current?.click()}>Импорт</button><input ref={importRef} hidden type="file" accept="application/json,.json" onChange={(event) => { void importViews(event); }} /></div>
         </div>
         <div className={styles.controls}>
           <div className={styles.filters}>
@@ -652,13 +647,14 @@ export function Matrix({ onOpenDeployment, onOpenPod, onClustersUnauthorized }: 
 
       <div className={styles.tableWrap}>
         <table className={styles.table} style={{
-          width: deploymentColumnWidth + visibleColumns.length * 24,
+          width: deploymentColumnWidth + visibleColumns.length * namespaceColumnWidth,
           '--deployment-column-width': `${deploymentColumnWidth}px`,
-          '--namespace-header-height': `${namespaceHeaderHeight}px`
+          '--namespace-header-height': `${namespaceHeaderHeight}px`,
+          '--namespace-column-width': `${namespaceColumnWidth}px`
         } as MatrixTableStyle}>
           <colgroup>
             <col style={{ width: deploymentColumnWidth }} />
-            {visibleColumns.map((column) => <col key={`col-${column.clusterId}/${column.namespace}`} style={{ width: 24 }} />)}
+            {visibleColumns.map((column) => <col key={`col-${column.clusterId}/${column.namespace}`} style={{ width: namespaceColumnWidth }} />)}
           </colgroup>
           <thead>
             <tr className={styles.namespaceRow}>
@@ -668,7 +664,7 @@ export function Matrix({ onOpenDeployment, onOpenPod, onClustersUnauthorized }: 
                 <i className={styles.cornerHeightResizer} onPointerDown={startNamespaceHeaderResize} title="Изменить высоту заголовков Namespace" />
               </th>
               {visibleColumns.map((column) => (
-                <th data-drop-zone="namespace" draggable onDragStart={(event) => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-quaber-namespace', `${column.clusterId}/${column.namespace}`); }} onDragEnd={() => setDragTarget(null)} onDragOver={(event) => showDropTarget(event, `${column.clusterId}/${column.namespace}`, 'namespace')} onDrop={(event) => moveItem(event, `${column.clusterId}/${column.namespace}`, 'namespace')} key={`${column.clusterId}/${column.namespace}`} className={`${styles.namespaceHeader} ${styles[`clusterTone${column.clusterIndex % 4}`]} ${column.lastInCluster ? styles.clusterBoundary : ''} ${dragTarget?.type === 'namespace' && dragTarget.target === `${column.clusterId}/${column.namespace}` ? (dragTarget.side === 'before' ? styles.dropBefore : styles.dropAfter) : ''}`} title={`${column.clusterName} / ${column.namespace}`}><div className={styles.namespaceParts}><span className={styles.namespaceCluster}><em>{clusterAlias(column.clusterId, column.clusterName, aliases)}</em></span><span className={styles.namespaceName}>{column.namespace}</span></div><i className={styles.namespaceHeightResizer} onPointerDown={startNamespaceHeaderResize} title="Изменить высоту заголовков Namespace" /></th>
+                <th data-drop-zone="namespace" draggable onDragStart={(event) => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-quaber-namespace', `${column.clusterId}/${column.namespace}`); }} onDragEnd={() => setDragTarget(null)} onDragOver={(event) => showDropTarget(event, `${column.clusterId}/${column.namespace}`, 'namespace')} onDrop={(event) => moveItem(event, `${column.clusterId}/${column.namespace}`, 'namespace')} key={`${column.clusterId}/${column.namespace}`} className={`${styles.namespaceHeader} ${styles[`clusterTone${column.clusterIndex % 4}`]} ${column.lastInCluster ? styles.clusterBoundary : ''} ${dragTarget?.type === 'namespace' && dragTarget.target === `${column.clusterId}/${column.namespace}` ? (dragTarget.side === 'before' ? styles.dropBefore : styles.dropAfter) : ''}`} title={`${column.clusterName} / ${column.namespace}`}><div className={styles.namespaceParts}><span className={styles.namespaceName}>{column.namespace}</span></div><i className={styles.namespaceHeightResizer} onPointerDown={startNamespaceHeaderResize} title="Изменить высоту заголовков Namespace" /></th>
               ))}
             </tr>
           </thead>
@@ -743,17 +739,19 @@ export function Matrix({ onOpenDeployment, onOpenPod, onClustersUnauthorized }: 
           <hr />
           <button onClick={() => {
             setConfirmRequest({
-              title: 'Перезапуск Pod',
-              description: `Pod ${context.pod.name} будет удалён, после чего контроллер создаст новый экземпляр.`,
-              confirmLabel: 'Перезапустить',
+              title: context.pod.hasController ? 'Перезапуск Pod' : 'Удаление Pod без контроллера',
+              description: context.pod.hasController
+                ? `Pod ${context.pod.name} (${context.column.clusterName} / ${context.column.namespace}) будет удалён. Контроллер создаст новый экземпляр. Возможны простой и потеря временных данных.`
+                : `Pod ${context.pod.name} (${context.column.clusterName} / ${context.column.namespace}) не имеет контроллера. Он будет удалён без автоматического восстановления; возможна потеря данных.`,
+              confirmLabel: context.pod.hasController ? 'Перезапустить' : 'Удалить Pod',
               onConfirm: async () => { await deleteMutation.mutateAsync({ pod: context.pod, column: context.column }); }
             });
             setContext(null);
-          }}>Перезапустить Pod</button>
+          }}>{context.pod.hasController ? 'Перезапустить Pod' : 'Удалить Pod без контроллера'}</button>
         </div>
       )}
 
-      {tabMenu && (() => { const view = views.find((item) => item.id === tabMenu.viewId); return view ? <div className={styles.tabContextMenu} style={{ left: tabMenu.x, top: tabMenu.y }} onClick={(event) => event.stopPropagation()}><button type="button" onClick={() => renameView(view.id)}>Переименовать</button><button type="button" onClick={() => { exportViews([view]); setTabMenu(null); }}>Экспортировать</button><div className={styles.colorMenu}><span>Цвет фона</span><div>{['transparent','#3b82f6','#10a87c','#d89516','#8b5cf6','#dc2626','#e2558f'].map((color) => <button key={color} aria-label={color === 'transparent' ? 'Без цвета' : `Цвет ${color}`} title={color === 'transparent' ? 'Без цвета' : color} style={{ background: color === 'transparent' ? 'var(--bg-input)' : color }} onClick={() => { setViews((items) => items.map((item) => item.id === view.id ? { ...item, color } : item)); setTabMenu(null); }} />)}</div></div><hr /><button type="button" className={styles.contextDanger} disabled={views.length <= 1} onClick={() => requestRemoveView(view.id)}>Удалить</button></div> : null; })()}
+      {tabMenu && (() => { const view = views.find((item) => item.id === tabMenu.viewId); return view ? <div className={styles.tabContextMenu} style={{ left: tabMenu.x, top: tabMenu.y }} onClick={(event) => event.stopPropagation()}><button type="button" onClick={() => renameView(view.id)}>Переименовать</button><button type="button" onClick={() => { exportViews(); setTabMenu(null); }}>Экспортировать все вкладки</button><div className={styles.colorMenu}><span>Цвет фона</span><div>{['transparent','#3b82f6','#10a87c','#d89516','#8b5cf6','#dc2626','#e2558f'].map((color) => <button key={color} aria-label={color === 'transparent' ? 'Без цвета' : `Цвет ${color}`} title={color === 'transparent' ? 'Без цвета' : color} style={{ background: color === 'transparent' ? 'var(--bg-input)' : color }} onClick={() => { setViews((items) => items.map((item) => item.id === view.id ? { ...item, color } : item)); setTabMenu(null); }} />)}</div></div><hr /><button type="button" className={styles.contextDanger} disabled={views.length <= 1} onClick={() => requestRemoveView(view.id)}>Удалить</button></div> : null; })()}
 
       {deploymentChoices && <div className={styles.choiceOverlay} onMouseDown={(event) => event.target === event.currentTarget && setDeploymentChoices(null)}><div className={styles.choiceModal}><div className={styles.choiceHeader}><div><h3>{deploymentChoices.name}</h3><span>Выберите точное расположение deployment</span></div><button onClick={() => setDeploymentChoices(null)} aria-label="Закрыть">×</button></div><div className={styles.choiceList}>{deploymentChoices.columns.map((column) => <button key={`${column.clusterId}/${column.namespace}`} onClick={() => { openDeployment(column, deploymentChoices.name); setDeploymentChoices(null); }}><b>{column.namespace}</b><span>{column.clusterName} / {column.namespace}</span></button>)}</div></div></div>}
 

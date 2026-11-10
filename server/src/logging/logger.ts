@@ -27,8 +27,13 @@ function actor(): Fields {
 }
 
 export function logInfo(action: string, fields: Fields = {}): void {
-  if (!applicationConfig.logging.enabled) return;
+  if (!applicationConfig.logging.enabled || applicationConfig.logging.level === 'error') return;
   console.info(`${new Date().toISOString()} INFO action=${clean(action)} ${suffix({ ...actor(), ...fields })}`.trim());
+}
+
+export function logDebug(action: string, fields: Fields = {}): void {
+  if (!applicationConfig.logging.enabled || applicationConfig.logging.level !== 'debug') return;
+  console.debug(`${new Date().toISOString()} DEBUG action=${clean(action)} ${suffix({ ...actor(), ...fields })}`.trim());
 }
 
 export function logError(action: string, error: unknown, fields: Fields = {}): void {
