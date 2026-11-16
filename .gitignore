@@ -48,3 +48,4 @@ DesktopApp/venv/bin/python3.12
 # Local desktop recovery staging and displaced snapshots
 /.desktop-restore-*/
 /DesktopApp-before-restore-*/
+/send/
