@@ -173,7 +173,7 @@ class ClusterDialog(QDialog):
 
     def choose_kubectl(self):
         path, _ = QFileDialog.getOpenFileName(self, "Выберите kubectl", self.kubectl_path.text() or str(self.app_dir),
-                                             "Исполняемые файлы (*.exe);;Все файлы (*)")
+                                             "Все файлы (*)")
         if path:
             self.kubectl_path.setText(path)
         return bool(path)
@@ -3068,7 +3068,7 @@ class MainWindow(QMainWindow):
             except (OSError, ValueError) as exc:
                 error(dialog, str(exc))
         def browse_client():
-            path, _ = QFileDialog.getOpenFileName(dialog, "Общий kubectl", str(self.app_dir), "Программы (*.exe);;Все файлы (*)")
+            path, _ = QFileDialog.getOpenFileName(dialog, "Общий kubectl", str(self.app_dir), "Все файлы (*)")
             if path:
                 client.setText(path)
                 set_client()
