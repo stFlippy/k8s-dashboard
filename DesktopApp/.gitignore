@@ -7,3 +7,9 @@ build/
 build-artifacts/
 .build-windows/
 *.spec
+/ca.crt
+/_rollback/
+/Addons/kubectl.exe
+/Addons/kubectl-real.exe
+/Addons/kubectl-login.json
+/Addons/certs/

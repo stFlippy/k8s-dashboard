@@ -63,11 +63,14 @@ class ThrottleSamples:
                     continue
                 key = cluster_id, namespace, pod, container
                 previous = self.samples.get(key)
+                if previous and periods == previous[0] and throttled == previous[1]:
+                    result[container] = previous[3]
+                    continue
                 percent = None
                 if previous and periods >= previous[0] and throttled >= previous[1]:
                     delta = periods - previous[0]
                     percent = max(0.0, min(100.0, (throttled - previous[1]) / delta * 100)) if delta else 0.0
-                self.samples[key] = (periods, throttled, now)
+                self.samples[key] = (periods, throttled, now, percent)
                 result[container] = percent
             if len(self.samples) > 5000:
                 self.samples = {key: value for key, value in self.samples.items() if now - value[2] <= 3600}

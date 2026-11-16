@@ -6,7 +6,6 @@ import os
 import hashlib
 import queue
 import re
-import shutil
 import subprocess
 import tempfile
 import threading
@@ -14,24 +13,36 @@ import time
 import json
 import urllib.request
 import uuid
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
 from .storage import UserStore, sanitize_kubeconfig
+from .processes import start_process, stop_process
+from .app_logging import register_secret
+
+logger = logging.getLogger("quaber.kubectl")
 
 
-def locate_kubectl(app_dir: Path) -> Path:
-    names = ("kubectl.exe", "kubectl") if os.name == "nt" else ("kubectl",)
-    for name in names:
-        path = app_dir / "addons" / name
-        if path.is_file():
-            if os.name != "nt" and not os.access(path, os.X_OK):
-                raise RuntimeError(f"{path} не является исполняемым файлом.")
-            return path
-    found = shutil.which("kubectl")
-    if found:
-        return Path(found)
-    raise FileNotFoundError("kubectl не найден. Поместите его в addons рядом с приложением или добавьте в PATH.")
+def locate_kubectl(app_dir: Path, configured_path: str = "") -> Path:
+    if configured_path.strip():
+        path = Path(os.path.expandvars(configured_path.strip())).expanduser().resolve()
+        if not path.is_file():
+            raise FileNotFoundError("Указанный kubectl не найден. Выберите исполняемый файл вручную.")
+        if os.name == "nt" and path.suffix.lower() != ".exe":
+            raise ValueError("На Windows выберите kubectl.exe.")
+        if os.name != "nt" and not os.access(path, os.X_OK):
+            raise ValueError("Указанный kubectl не является исполняемым файлом.")
+        return path
+    # Only PATH entries are searched; a bundled file must be selected explicitly.
+    name = "kubectl.exe" if os.name == "nt" else "kubectl"
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry:
+            continue
+        path = Path(os.path.expandvars(entry.strip('"'))) / name
+        if path.is_file() and (os.name == "nt" or os.access(path, os.X_OK)):
+            return path.resolve()
+    raise FileNotFoundError("kubectl не найден в PATH. Укажите путь к kubectl вручную.")
 
 
 def _login_message(output: str, password: str) -> str:
@@ -53,7 +64,7 @@ def _login_message(output: str, password: str) -> str:
 
 def run_limited(args: list[str], timeout: float, limit: int, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     """Read both pipes concurrently and stop a client that exceeds the output budget."""
-    process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    process = start_process(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
     chunks: queue.Queue[tuple[str, bytes]] = queue.Queue(maxsize=32)
     stop = threading.Event()
     def read_pipe(name: str, pipe) -> None:
@@ -94,20 +105,23 @@ def run_limited(args: list[str], timeout: float, limit: int, env: dict[str, str]
             if total > limit:
                 raise RuntimeError(f"Вывод внешней команды превысил {limit // 1024} КиБ; результат неизвестен.")
             output[name].append(chunk)
-        code = process.wait(timeout=max(0.1, deadline - time.monotonic()))
+        try:
+            code = process.wait(timeout=max(0.1, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            raise TimeoutError(f"Внешняя команда превысила {timeout:g} секунд; результат неизвестен.") from None
         return subprocess.CompletedProcess(args, code, b"".join(output["stdout"]), b"".join(output["stderr"]))
     finally:
         stop.set()
-        if process.poll() is None:
-            process.kill()
-        process.wait()
+        stop_process(process)
         for thread in threads:
             thread.join(timeout=1)
 
 
 def login(executable: Path, server: str, username: str, password: str) -> str:
+    register_secret(password)
     if not password or len(password) > 1024:
         raise ValueError("Введите пароль кластера (не более 1024 символов).")
+    logger.info("Вход в кластер %s", server)
     with tempfile.TemporaryDirectory(prefix="quaber-login-") as home:
         config = Path(home) / ".kube" / "config"
         config.parent.mkdir(mode=0o700)
@@ -117,10 +131,13 @@ def login(executable: Path, server: str, username: str, password: str) -> str:
         result = run_limited([str(executable), "login", server, "--username", username, "--password", password],
                              timeout=45, limit=1_000_000, env=env)
         if result.returncode:
+            logger.warning("Вход в кластер не выполнен: код %s", result.returncode)
             raise RuntimeError(_login_message((result.stderr + b"\n" + result.stdout).decode("utf-8", "replace"), password))
         if not config.exists():
             raise RuntimeError("kubectl login не создал kubeconfig.")
-        return sanitize_kubeconfig(config.read_text(encoding="utf-8"), server)
+        sanitized = sanitize_kubeconfig(config.read_text(encoding="utf-8"), server)
+        logger.info("Вход в кластер завершён")
+        return sanitized
 
 
 @dataclass
@@ -131,6 +148,7 @@ class Proxy:
     last_used: float
     credential_hash: int
     idle_timer: threading.Timer | None = None
+    readers: tuple[threading.Thread, ...] = ()
 
 
 class ProxyManager:
@@ -147,17 +165,26 @@ class ProxyManager:
                 if proxy:
                     if proxy.idle_timer:
                         proxy.idle_timer.cancel()
-                    proxy.process.terminate()
-                    try:
-                        proxy.process.wait(timeout=3)
-                    except subprocess.TimeoutExpired:
-                        proxy.process.kill()
-                        proxy.process.wait(timeout=3)
-                    if proxy.process.stdout:
-                        proxy.process.stdout.close()
-                    if proxy.process.stderr:
-                        proxy.process.stderr.close()
+                    self._stop(proxy.process, proxy.readers)
                     proxy.temporary.cleanup()
+
+    @staticmethod
+    def _stop(process, readers):
+        stop_process(process)
+        for reader in readers:
+            reader.join(timeout=1)
+        # Never wait on a buffered pipe lock held by a blocked reader.
+        if not any(reader.is_alive() for reader in readers):
+            if process.stdout:
+                process.stdout.close()
+            if process.stderr:
+                process.stderr.close()
+
+    def executable_for(self, cluster: dict) -> Path:
+        if self.store.preferences().get("kubectl_path"):
+            return locate_kubectl(self.store.root.parent, self.store.preferences()["kubectl_path"])
+        # Resolve PATH at use time, including after a manual client selection.
+        return locate_kubectl(self.store.root.parent) if self.executable is None else self.executable
 
     def _touch(self, cluster_id: str, proxy: Proxy) -> None:
         proxy.last_used = time.monotonic()
@@ -168,12 +195,11 @@ class ProxyManager:
         proxy.idle_timer.start()
 
     def url(self, cluster: dict) -> str:
-        if self.executable is None:
-            raise FileNotFoundError("kubectl не найден. Поместите его в addons рядом с приложением или добавьте в PATH.")
+        executable = self.executable_for(cluster)
         if not cluster["enabled"]:
             raise ValueError(f"Кластер {cluster['name']} отключён.")
         credential = self.store.decrypt(cluster["encryptedKubeconfig"])
-        fingerprint = int.from_bytes(hashlib.sha256(credential.encode()).digest(), "big")
+        fingerprint = int.from_bytes(hashlib.sha256((str(executable) + "\0" + credential).encode()).digest(), "big")
         with self._lock:
             proxy = self._proxies.get(cluster["id"])
             if proxy and (proxy.process.poll() is not None or proxy.credential_hash != fingerprint or time.monotonic() - proxy.last_used > 900):
@@ -188,10 +214,14 @@ class ProxyManager:
             if os.name != "nt":
                 config.chmod(0o600)
             prefix = "/quaber-" + os.urandom(18).hex()
-            args = [str(self.executable), "proxy", "--kubeconfig", str(config), "--address=127.0.0.1", "--port=0",
+            args = [str(executable), "proxy", "--kubeconfig", str(config), "--address=127.0.0.1", "--port=0",
                     f"--api-prefix={prefix}", "--reject-paths=^$", r"--accept-hosts=^127\.0\.0\.1$"]
-            process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                       text=True, encoding="utf-8", errors="replace", bufsize=1)
+            try:
+                process = start_process(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                        text=True, encoding="utf-8", errors="replace", bufsize=1)
+            except BaseException:
+                temporary.cleanup()
+                raise
             output: queue.Queue[str] = queue.Queue(maxsize=100)
             def put_output(line: str) -> None:
                 try:
@@ -202,13 +232,14 @@ class ProxyManager:
                 assert process.stdout is not None
                 for line in process.stdout:
                     put_output(line)
-            threading.Thread(target=read_stdout, daemon=True).start()
             # Drain stderr too: a verbose client must not block on its pipe.
             def read_stderr() -> None:
                 assert process.stderr is not None
                 for line in process.stderr:
                     put_output("stderr: " + line[-500:])
-            threading.Thread(target=read_stderr, daemon=True).start()
+            readers = (threading.Thread(target=read_stdout, daemon=True), threading.Thread(target=read_stderr, daemon=True))
+            for reader in readers:
+                reader.start()
             deadline = time.monotonic() + 15
             try:
                 while time.monotonic() < deadline:
@@ -220,28 +251,18 @@ class ProxyManager:
                         continue
                     match = re.search(r"Starting to serve on 127\.0\.0\.1:(\d+)", line)
                     if match:
-                        proxy = Proxy(process, temporary, f"http://127.0.0.1:{match.group(1)}{prefix}", time.monotonic(), fingerprint)
+                        proxy = Proxy(process, temporary, f"http://127.0.0.1:{match.group(1)}{prefix}", time.monotonic(), fingerprint, readers=readers)
                         self._proxies[cluster["id"]] = proxy
                         self._touch(cluster["id"], proxy)
                         return proxy.base_url
                 raise TimeoutError("kubectl proxy не запустился за 15 секунд.")
             except Exception:
-                process.terminate()
-                try:
-                    process.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=3)
-                if process.stdout:
-                    process.stdout.close()
-                if process.stderr:
-                    process.stderr.close()
+                self._stop(process, readers)
                 temporary.cleanup()
                 raise
 
     def execute(self, cluster: dict, namespace: str, pod: str, container: str, command: str) -> tuple[str, str]:
-        if self.executable is None:
-            raise FileNotFoundError("kubectl не найден. Поместите его в addons или PATH.")
+        executable = self.executable_for(cluster)
         command = command.strip()
         if not command or len(command) > 8192:
             raise ValueError("Команда должна содержать от 1 до 8192 символов.")
@@ -250,7 +271,7 @@ class ProxyManager:
             config.write_text(self.store.decrypt(cluster["encryptedKubeconfig"]), encoding="utf-8")
             if os.name != "nt":
                 config.chmod(0o600)
-            result = run_limited([str(self.executable), "--kubeconfig", str(config), "exec", "-n", namespace,
+            result = run_limited([str(executable), "--kubeconfig", str(config), "exec", "-n", namespace,
                                   pod, "-c", container, "--", "/bin/sh", "-lc", command], timeout=30, limit=2 * 1024 * 1024)
             stdout, stderr = result.stdout.decode("utf-8", "replace"), result.stderr.decode("utf-8", "replace")
             if result.returncode:
@@ -270,7 +291,10 @@ def test_connection(executable: Path, store: UserStore, server: str, kubeconfig:
     try:
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         with opener.open(proxy.url(temporary) + "/api/v1/namespaces", timeout=15) as response:
-            result = json.load(response)
+            body = response.read(4 * 1024 * 1024 + 1)
+            if len(body) > 4 * 1024 * 1024:
+                raise ValueError("Ответ проверки подключения превышает 4 МиБ.")
+            result = json.loads(body)
         if not isinstance(result, dict) or not isinstance(result.get("items"), list):
             raise ValueError("Kubernetes вернул некорректный список namespaces.")
         return len(result["items"])

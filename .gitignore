@@ -40,3 +40,6 @@ addons/*.csv
 *.pid
 .DS_Store
 .vscode/
+# Local desktop recovery staging and displaced snapshots
+/.desktop-restore-*/
+/DesktopApp-before-restore-*/

@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from PyQt6.QtWidgets import QApplication, QMessageBox
+from PyQt6.QtCore import QLockFile
 
 from quaber.storage import UserStore
 
@@ -13,17 +14,29 @@ from quaber.storage import UserStore
 def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("Quaber")
+    app.quaber_console_logging = True
     app.setStyle("Fusion")
     app_dir = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
+    data_dir = app_dir / "UserData"
     try:
-        store = UserStore(app_dir / "UserData")
+        data_dir.mkdir(parents=True, exist_ok=True)
+        instance_lock = QLockFile(str(data_dir.resolve() / "quaber.lock"))
+        instance_lock.setStaleLockTime(0)
+        if not instance_lock.tryLock(0):
+            raise RuntimeError("Эта папка UserData уже используется другим экземпляром Quaber.")
+        store = UserStore(data_dir)
         from quaber.ui import MainWindow
         window = MainWindow(store, app_dir)
     except Exception as exc:
         QMessageBox.critical(None, "Quaber — ошибка запуска", str(exc))
         return 1
     window.show()
-    return app.exec()
+    result = app.exec()
+    cleanup = getattr(window, "_cleanup_thread", None)
+    if cleanup is not None:
+        cleanup.join()
+    instance_lock.unlock()
+    return result
 
 
 if __name__ == "__main__":

@@ -28,6 +28,36 @@ contexts:
 
 
 class StoreTests(unittest.TestCase):
+    def test_password_is_opt_in_encrypted_portable_and_removable(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = UserStore(root)
+            cluster = store.put_cluster("One", "https://example.test:6443", "alice", CONFIG,
+                                        password="private-fixture-password", remember_password=True,
+                                        kubectl_path="C:/clients/kubectl.exe")
+            self.assertNotIn("private-fixture-password", store.clusters_file.read_text())
+            self.assertEqual(UserStore(root).saved_password(cluster), "private-fixture-password")
+            edited = store.put_cluster("Renamed", cluster["server"], "alice", None, cluster_id=cluster["id"])
+            self.assertEqual(store.saved_password(edited), "private-fixture-password")
+            self.assertEqual(edited["kubectlPath"], "C:/clients/kubectl.exe")
+            store.update_logins({cluster["id"]: CONFIG}, password="new-fixture-password")
+            self.assertEqual(store.saved_password(store.clusters()[0]), "new-fixture-password")
+            removed = store.put_cluster("Renamed", cluster["server"], "alice", None, cluster_id=cluster["id"],
+                                        remember_password=False, kubectl_path="")
+            self.assertNotIn("encryptedPassword", removed)
+            self.assertNotIn("kubectlPath", removed)
+
+    def test_password_is_not_reused_for_another_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = UserStore(Path(temporary))
+            cluster = store.put_cluster("One", "https://example.test:6443", "alice", CONFIG,
+                                        password="private-fixture-password", remember_password=True)
+            edited = store.put_cluster("One", cluster["server"], "bob", CONFIG, cluster_id=cluster["id"])
+            self.assertNotIn("encryptedPassword", edited)
+            other = store.put_cluster("Two", cluster["server"], "alice", CONFIG)
+            store.update_logins({other["id"]: CONFIG}, password="not-opted-in")
+            self.assertNotIn("encryptedPassword", store.clusters()[1])
+
     def test_portable_credentials_and_no_password(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
