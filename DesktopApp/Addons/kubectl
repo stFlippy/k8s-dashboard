@@ -1,0 +1,492 @@
+#!/usr/bin/env bash
+
+set -u
+set -o pipefail
+umask 077
+
+PROGRAM_VERSION="0.4.0"
+DEFAULT_CLIENT_ID="kubernetes"
+DEFAULT_SCOPES="openid profile email groups"
+DEFAULT_TIMEOUT=20
+
+die() {
+  printf 'Ошибка: %s\n' "$*" >&2
+  exit 1
+}
+
+info() {
+  printf '%s\n' "$*" >&2
+}
+
+usage() {
+  cat <<'EOF'
+Log in to your server and save login for subsequent use. Configuration will
+be saved to your home directory under ".kube/config".
+
+Usage:
+  kubectl login [URL] [flags] [options]
+
+Examples:
+  # Log in interactively
+  kubectl login https://api.cluster.example.com:443
+  kubectl login --server https://api.cluster.example.com:443
+
+  # Use the given credentials without interactive prompts
+  kubectl login https://api.cluster.example.com:443 --username USER --password PASSWORD
+
+  # Print only the token and do not generate kubeconfig
+  kubectl login https://api.cluster.example.com:443 --username USER --password PASSWORD --onlytoken
+
+Options:
+  -u, --username string     Username for server
+  -p, --password string     Password for server
+      --onlytoken[=false]   If true, print token only, not generated kubeconfig
+      --server string       Kubernetes API server URL
+  -h, --help                Help for login
+EOF
+}
+
+require_value() {
+  local option="$1"
+  local value="${2-}"
+  [[ -n "$value" ]] || die "для $option требуется значение"
+}
+
+parse_bool() {
+  case "${1,,}" in
+    true|1|yes|on) printf 'true' ;;
+    false|0|no|off) printf 'false' ;;
+    *) die "ожидалось логическое значение true/false, получено: $1" ;;
+  esac
+}
+
+need_command() {
+  command -v "$1" >/dev/null 2>&1 || die "не найдена обязательная команда: $1"
+}
+
+json_get() {
+  local file="$1"
+  local key="$2"
+  if command -v jq >/dev/null 2>&1; then
+    jq -er --arg key "$key" '.[$key] | select(type == "string" and length > 0)' "$file" 2>/dev/null
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import json,sys; v=json.load(open(sys.argv[1], encoding="utf-8")).get(sys.argv[2]); assert isinstance(v,str) and v; print(v)' "$file" "$key" 2>/dev/null
+  else
+    die "для разбора ответа нужен jq или python3"
+  fi
+}
+
+json_error_text() {
+  local file="$1"
+  local error description
+  error="$(json_get "$file" error 2>/dev/null || true)"
+  description="$(json_get "$file" error_description 2>/dev/null || true)"
+  if [[ -n "$error" && -n "$description" ]]; then
+    printf '%s: %s' "$error" "$description"
+  elif [[ -n "$error" ]]; then
+    printf '%s' "$error"
+  else
+    tr '\n' ' ' < "$file" | cut -c1-500
+  fi
+}
+
+json_list_namespaces() {
+  local file="$1"
+  if command -v jq >/dev/null 2>&1; then
+    jq -er '.items | map(.metadata.name) | sort | .[]' "$file" 2>/dev/null
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import json,sys; d=json.load(open(sys.argv[1], encoding="utf-8")); print("\n".join(sorted(x["metadata"]["name"] for x in d["items"])))' "$file" 2>/dev/null
+  else
+    die "для разбора ответа нужен jq или python3"
+  fi
+}
+
+jwt_claim() {
+  local token="$1"
+  local claim="$2"
+  local payload padding
+  payload="${token#*.}"
+  payload="${payload%%.*}"
+  payload="${payload//-/+}"
+  payload="${payload//_/\/}"
+  padding=$(( (4 - ${#payload} % 4) % 4 ))
+  while (( padding > 0 )); do payload+='='; ((padding--)); done
+  if command -v jq >/dev/null 2>&1; then
+    printf '%s' "$payload" | base64 -d 2>/dev/null | jq -er --arg claim "$claim" '.[$claim] | select(type == "string" and length > 0)' 2>/dev/null
+  elif command -v python3 >/dev/null 2>&1; then
+    printf '%s' "$payload" | base64 -d 2>/dev/null | python3 -c 'import json,sys; v=json.load(sys.stdin).get(sys.argv[1]); assert isinstance(v,str) and v; print(v)' "$claim" 2>/dev/null
+  else
+    return 1
+  fi
+}
+
+find_real_kubectl() {
+  local self candidate resolved
+  self="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
+  while IFS= read -r candidate; do
+    [[ -x "$candidate" ]] || continue
+    resolved="$(readlink -f "$candidate" 2>/dev/null || printf '%s' "$candidate")"
+    [[ "$resolved" == "$self" ]] && continue
+    if "$candidate" version --client >/dev/null 2>&1; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done < <(type -aP kubectl 2>/dev/null | awk '!seen[$0]++')
+  for candidate in /usr/local/bin/kubectl /usr/bin/kubectl; do
+    [[ -x "$candidate" ]] || continue
+    resolved="$(readlink -f "$candidate" 2>/dev/null || printf '%s' "$candidate")"
+    [[ "$resolved" == "$self" ]] && continue
+    printf '%s' "$candidate"
+    return 0
+  done
+  return 1
+}
+
+urlencode() {
+  local input="$1"
+  local output=""
+  local char hex i
+  local LC_ALL=C
+  for ((i = 0; i < ${#input}; i++)); do
+    char="${input:i:1}"
+    case "$char" in
+      [a-zA-Z0-9.~_-]) output+="$char" ;;
+      ' ') output+='%20' ;;
+      *)
+        printf -v hex '%%%02X' "'$char"
+        output+="$hex"
+        ;;
+    esac
+  done
+  printf '%s' "$output"
+}
+
+yaml_quote() {
+  local value="$1"
+  value="${value//\'/\'\'}"
+  printf "'%s'" "$value"
+}
+
+sanitize_name() {
+  local value="$1"
+  value="${value//[^a-zA-Z0-9._-]/-}"
+  value="${value#-}"
+  value="${value%-}"
+  [[ -n "$value" ]] || value="cluster"
+  printf '%s' "$value"
+}
+
+server=""
+username=""
+password=""
+only_token=false
+kubeconfig_path="${KUBECONFIG-}"
+issuer="${QUABER_OIDC_ISSUER_URL-}"
+client_id="${QUABER_OIDC_CLIENT_ID-$DEFAULT_CLIENT_ID}"
+client_secret="${QUABER_OIDC_CLIENT_SECRET-}"
+client_secret_file="${QUABER_OIDC_CLIENT_SECRET_FILE-}"
+scopes="${QUABER_OIDC_SCOPES-$DEFAULT_SCOPES}"
+api_ca="${QUABER_API_CA_FILE-}"
+oidc_ca="${QUABER_OIDC_CA_FILE-}"
+api_insecure="$(parse_bool "${QUABER_API_INSECURE_SKIP_TLS_VERIFY-true}")"
+oidc_insecure="$(parse_bool "${QUABER_OIDC_INSECURE_SKIP_TLS_VERIFY-true}")"
+timeout_seconds="${QUABER_LOGIN_TIMEOUT-$DEFAULT_TIMEOUT}"
+cluster_name="${QUABER_CLUSTER_NAME-}"
+context_name="${QUABER_CONTEXT_NAME-}"
+user_name="${QUABER_USER_NAME-}"
+
+[[ $# -gt 0 ]] || { usage; exit 1; }
+case "$1" in
+  login|-login) shift ;;
+  -h|--help) usage; exit 0 ;;
+  --version) printf 'kubectl-login simulator %s\n' "$PROGRAM_VERSION"; exit 0 ;;
+  *)
+    real_kubectl="$(find_real_kubectl)" || die "не найден системный kubectl для команды: $1"
+    exec "$real_kubectl" "$@"
+    ;;
+esac
+
+while [[ $# -gt 0 ]]; do
+  arg="$1"
+  case "$arg" in
+    -h|--help) usage; exit 0 ;;
+    --version) printf 'kubectl-login simulator %s\n' "$PROGRAM_VERSION"; exit 0 ;;
+    -u|--username)
+      require_value "$arg" "${2-}"; username="$2"; shift 2 ;;
+    --username=*) username="${arg#*=}"; require_value --username "$username"; shift ;;
+    -p|--password)
+      require_value "$arg" "${2-}"; password="$2"; shift 2 ;;
+    --password=*) password="${arg#*=}"; require_value --password "$password"; shift ;;
+    --onlytoken) only_token=true; shift ;;
+    --onlytoken=*) only_token="$(parse_bool "${arg#*=}")"; shift ;;
+    --server)
+      require_value "$arg" "${2-}"; server="$2"; shift 2 ;;
+    --server=*) server="${arg#*=}"; require_value --server "$server"; shift ;;
+    --*) die "неизвестный флаг: $arg" ;;
+    *)
+      [[ -z "$server" ]] || die "лишний позиционный аргумент: $arg"
+      server="$arg"
+      shift
+      ;;
+  esac
+done
+
+need_command curl
+need_command base64
+
+if [[ -z "$kubeconfig_path" ]]; then
+  [[ -n "${HOME-}" ]] || die "переменная HOME не задана"
+  kubeconfig_path="$HOME/.kube/config"
+fi
+
+if [[ -z "$server" ]]; then
+  [[ -s "$kubeconfig_path" ]] || die "не указан URL Kubernetes API и отсутствует активный kubeconfig"
+  discovery_kubectl="$(find_real_kubectl)" || die "не найден системный kubectl для чтения активного сервера"
+  server="$("$discovery_kubectl" --kubeconfig "$kubeconfig_path" config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || true)"
+  [[ -n "$server" ]] || die "не удалось определить активный Kubernetes API server из kubeconfig"
+fi
+[[ "$server" =~ ^https://[^/[:space:]]+/?$ ]] || die "URL Kubernetes API должен иметь вид https://host:port"
+server="${server%/}"
+
+[[ "$timeout_seconds" =~ ^[1-9][0-9]*$ ]] || die "--timeout должен быть целым числом больше нуля"
+(( timeout_seconds <= 600 )) || die "--timeout не должен превышать 600 секунд"
+
+case "$server" in
+  https://192.168.56.11:6443)
+    [[ -n "$issuer" ]] || issuer="https://192.168.56.10:5556"
+    [[ -n "$api_ca" ]] || api_ca="/home/flippy/k8s-lab/kubeconfigs/k8s-lab-1-ca.crt"
+    ;;
+  https://192.168.56.12:6443)
+    [[ -n "$issuer" ]] || issuer="https://192.168.56.10:5556"
+    [[ -n "$api_ca" ]] || api_ca="/home/flippy/k8s-lab/kubeconfigs/k8s-lab-2-ca.crt"
+    ;;
+esac
+
+if [[ "$issuer" == "https://192.168.56.10:5556" && -z "$oidc_ca" ]]; then
+  oidc_ca="/home/flippy/k8s-lab/dex/tls/ca.crt"
+fi
+
+[[ -n "$issuer" ]] || die "для неизвестного кластера укажите --oidc-issuer-url"
+[[ "$issuer" =~ ^https://[^/[:space:]]+(/[^[:space:]]*)?$ ]] || die "OIDC issuer должен быть HTTPS URL"
+issuer="${issuer%/}"
+
+if [[ "$api_insecure" != true && -n "$api_ca" && ! -r "$api_ca" ]]; then
+  die "не удаётся прочитать CA Kubernetes API: $api_ca"
+fi
+if [[ "$oidc_insecure" != true && -n "$oidc_ca" && ! -r "$oidc_ca" ]]; then
+  die "не удаётся прочитать CA Dex: $oidc_ca"
+fi
+if [[ -n "$client_secret" && -n "$client_secret_file" ]]; then
+  die "нельзя одновременно использовать --oidc-client-secret и --oidc-client-secret-file"
+fi
+if [[ -n "$client_secret_file" ]]; then
+  [[ -f "$client_secret_file" && -r "$client_secret_file" && ! -L "$client_secret_file" ]] || die "не удаётся безопасно прочитать client secret: $client_secret_file"
+  IFS= read -r client_secret < "$client_secret_file" || true
+fi
+
+printf 'Server: %s\n\n' "$server" >&2
+
+if [[ -z "$username" ]]; then
+  [[ -t 0 ]] || die "укажите --username при неинтерактивном запуске"
+  read -r -p 'Enter Username: ' username
+fi
+if [[ -z "$password" ]]; then
+  if [[ -t 0 ]]; then
+    read -r -s -p 'Enter Password: ' password
+    printf '\n' >&2
+  else
+    IFS= read -r password || true
+  fi
+fi
+[[ -n "$username" ]] || die "имя пользователя не может быть пустым"
+[[ -n "$password" ]] || die "пароль не может быть пустым"
+
+[[ " $scopes " == *" openid "* ]] || scopes="openid $scopes"
+
+tmp_dir="$(mktemp -d)" || die "не удалось создать временный каталог"
+output_tmp=""
+cleanup() {
+  password=""
+  client_secret=""
+  [[ -z "$output_tmp" ]] || rm -f -- "$output_tmp"
+  rm -rf -- "$tmp_dir"
+}
+trap cleanup EXIT HUP INT TERM
+
+discovery_file="$tmp_dir/discovery.json"
+token_file="$tmp_dir/token.json"
+request_file="$tmp_dir/token-request"
+curl_config="$tmp_dir/curl.conf"
+api_response="$tmp_dir/api-response"
+api_curl_config="$tmp_dir/api-curl.conf"
+api_headers="$tmp_dir/api-headers"
+
+oidc_curl=(curl --silent --show-error --connect-timeout "$timeout_seconds" --max-time "$timeout_seconds")
+if [[ "$oidc_insecure" == true ]]; then
+  oidc_curl+=(--insecure)
+elif [[ -n "$oidc_ca" ]]; then
+  oidc_curl+=(--cacert "$oidc_ca")
+fi
+
+discovery_status="$("${oidc_curl[@]}" --output "$discovery_file" --write-out '%{http_code}' "$issuer/.well-known/openid-configuration")" || die "не удалось подключиться к Dex"
+[[ "$discovery_status" == 200 ]] || die "Dex discovery вернул HTTP $discovery_status: $(json_error_text "$discovery_file")"
+
+discovered_issuer="$(json_get "$discovery_file" issuer)" || die "в discovery отсутствует issuer"
+token_endpoint="$(json_get "$discovery_file" token_endpoint)" || die "в discovery отсутствует token_endpoint"
+[[ "$discovered_issuer" == "$issuer" ]] || die "issuer mismatch: ожидался $issuer, получен $discovered_issuer"
+[[ "$token_endpoint" =~ ^https:// ]] || die "Dex сообщил небезопасный token endpoint"
+
+basic_auth="$(printf '%s:%s' "$client_id" "$client_secret" | base64 | tr -d '\n')"
+printf 'header = "Authorization: Basic %s"\n' "$basic_auth" > "$curl_config"
+basic_auth=""
+
+{
+  printf 'grant_type=password'
+  printf '&scope=%s' "$(urlencode "$scopes")"
+  printf '&username=%s' "$(urlencode "$username")"
+  printf '&password=%s' "$(urlencode "$password")"
+} > "$request_file"
+
+token_status="$("${oidc_curl[@]}" --config "$curl_config" --header 'Content-Type: application/x-www-form-urlencoded' --data-binary "@$request_file" --output "$token_file" --write-out '%{http_code}' "$token_endpoint")" || die "ошибка запроса к token endpoint"
+password=""
+: > "$request_file"
+
+if [[ "$token_status" != 200 ]]; then
+  token_error="$(json_get "$token_file" error 2>/dev/null || true)"
+  token_error_description="$(json_get "$token_file" error_description 2>/dev/null || true)"
+  if [[ "$token_error" == "access_denied" && -n "$token_error_description" ]]; then
+    printf '\n%s\n' "$token_error_description" >&2
+    exit 1
+  fi
+  die "Dex отклонил вход (HTTP $token_status): $(json_error_text "$token_file")"
+fi
+
+id_token="$(json_get "$token_file" id_token)" || die "Dex не вернул id_token"
+[[ "$id_token" == *.*.* ]] || die "Dex вернул некорректный ID-токен"
+
+if [[ "$only_token" == true ]]; then
+  printf '\n' >&2
+  printf '%s\n' "$id_token"
+  exit 0
+fi
+
+api_curl=(curl --silent --show-error --connect-timeout "$timeout_seconds" --max-time "$timeout_seconds")
+if [[ "$api_insecure" == true ]]; then
+  api_curl+=(--insecure)
+elif [[ -n "$api_ca" ]]; then
+  api_curl+=(--cacert "$api_ca")
+fi
+printf 'header = "Authorization: Bearer %s"\n' "$id_token" > "$api_curl_config"
+api_status="$("${api_curl[@]}" --config "$api_curl_config" --dump-header "$api_headers" --output "$api_response" --write-out '%{http_code}' "$server/api/v1/namespaces")" || die "не удалось подключиться к Kubernetes API"
+: > "$api_curl_config"
+case "$api_status" in
+  200) ;;
+  403) ;;
+  401)
+    api_date="$(awk 'BEGIN { IGNORECASE=1 } /^date:/ { sub(/^[^:]+:[[:space:]]*/, ""); sub(/\r$/, ""); value=$0 } END { print value }' "$api_headers")"
+    local_date="$(date -u '+%a, %d %b %Y %H:%M:%S GMT')"
+    api_epoch="$(date -u -d "$api_date" '+%s' 2>/dev/null || true)"
+    local_epoch="$(date -u '+%s')"
+    if [[ "$api_epoch" =~ ^[0-9]+$ ]]; then
+      clock_skew=$((api_epoch - local_epoch))
+      (( clock_skew < 0 )) && clock_skew=$((-clock_skew))
+      if (( clock_skew > 300 )); then
+        die "рассинхронизация времени Kubernetes API и backend: ${clock_skew} сек. Backend: $local_date; API: $api_date. Новый OIDC-токен считается недействительным; синхронизируйте время/NTP control-plane"
+      fi
+    fi
+    die "Kubernetes API отклонил полученный токен (HTTP 401). Backend: $local_date; API: ${api_date:-не указано}"
+    ;;
+  *) die "неожиданный ответ Kubernetes API: HTTP $api_status" ;;
+esac
+
+namespaces=()
+if [[ "$api_status" == 200 ]]; then
+  mapfile -t namespaces < <(json_list_namespaces "$api_response")
+fi
+
+host_port="${server#https://}"
+safe_host="$(sanitize_name "$host_port")"
+[[ -n "$cluster_name" ]] || cluster_name="$host_port"
+[[ -n "$user_name" ]] || user_name="$username/$host_port"
+
+real_kubectl="$(find_real_kubectl)" || die "не найден системный kubectl, необходимый для безопасного объединения kubeconfig"
+selected_namespace=""
+if [[ -s "$kubeconfig_path" ]]; then
+  existing_cluster="$("$real_kubectl" --kubeconfig "$kubeconfig_path" config view --minify -o jsonpath='{.contexts[0].context.cluster}' 2>/dev/null || true)"
+  if [[ "$existing_cluster" == "$cluster_name" ]]; then
+    selected_namespace="$("$real_kubectl" --kubeconfig "$kubeconfig_path" config view --minify -o jsonpath='{.contexts[0].context.namespace}' 2>/dev/null || true)"
+  fi
+fi
+
+namespace_exists=false
+for namespace in "${namespaces[@]}"; do
+  [[ "$namespace" == "$selected_namespace" ]] && namespace_exists=true
+done
+if [[ "$namespace_exists" != true ]]; then
+  selected_namespace=""
+  for namespace in "${namespaces[@]}"; do
+    if [[ "$namespace" == default ]]; then
+      selected_namespace=default
+      break
+    fi
+  done
+fi
+if [[ -z "$selected_namespace" && ${#namespaces[@]} -gt 0 ]]; then
+  selected_namespace="${namespaces[0]}"
+fi
+[[ -n "$selected_namespace" ]] || selected_namespace=default
+[[ -n "$context_name" ]] || context_name="$selected_namespace/$host_port/$username"
+
+kubeconfig_dir="$(dirname -- "$kubeconfig_path")"
+mkdir -p -- "$kubeconfig_dir" || die "не удалось создать каталог: $kubeconfig_dir"
+[[ ! -L "$kubeconfig_path" ]] || die "отказ от замены символической ссылки: $kubeconfig_path"
+fragment="$tmp_dir/new-login.yaml"
+existing_copy="$tmp_dir/existing-config.yaml"
+
+if [[ "$api_insecure" == true ]]; then
+  cluster_tls_line="    insecure-skip-tls-verify: true"
+elif [[ -n "$api_ca" ]]; then
+  ca_data="$(base64 < "$api_ca" | tr -d '\n')"
+  cluster_tls_line="    certificate-authority-data: $ca_data"
+else
+  cluster_tls_line=""
+fi
+
+{
+  printf 'apiVersion: v1\nkind: Config\n'
+  printf 'clusters:\n- name: %s\n  cluster:\n    server: %s\n' "$(yaml_quote "$cluster_name")" "$(yaml_quote "$server")"
+  [[ -z "$cluster_tls_line" ]] || printf '%s\n' "$cluster_tls_line"
+  printf 'users:\n- name: %s\n  user:\n    token: %s\n' "$(yaml_quote "$user_name")" "$(yaml_quote "$id_token")"
+  printf 'contexts:\n- name: %s\n  context:\n    cluster: %s\n    user: %s\n    namespace: %s\n' \
+    "$(yaml_quote "$context_name")" "$(yaml_quote "$cluster_name")" "$(yaml_quote "$user_name")" "$(yaml_quote "$selected_namespace")"
+  printf 'current-context: %s\n' "$(yaml_quote "$context_name")"
+} > "$fragment" || die "не удалось сформировать kubeconfig"
+
+config_sources="$fragment"
+if [[ -s "$kubeconfig_path" ]]; then
+  cp -- "$kubeconfig_path" "$existing_copy" || die "не удалось прочитать существующий kubeconfig"
+  config_sources="$fragment:$existing_copy"
+fi
+output_tmp="$kubeconfig_dir/.config.kubectl-login.$$.tmp"
+KUBECONFIG="$config_sources" "$real_kubectl" config view --raw --flatten > "$output_tmp" || die "не удалось объединить kubeconfig"
+chmod 600 "$output_tmp"
+mv -f -- "$output_tmp" "$kubeconfig_path" || die "не удалось сохранить kubeconfig"
+output_tmp=""
+
+display_user="$(jwt_claim "$id_token" preferred_username 2>/dev/null || true)"
+[[ -n "$display_user" ]] || display_user="$username"
+printf '\nYou successfully logged into %s as %s\n\n' "$server" "$display_user"
+if [[ ${#namespaces[@]} -gt 0 ]]; then
+  printf "You have access to the following namespaces and can switch between them with 'kubectl config set-context --current --namespace=<namespace>'\n\n"
+  for namespace in "${namespaces[@]}"; do
+    if [[ "$namespace" == "$selected_namespace" ]]; then
+      printf '  * %s\n' "$namespace"
+    else
+      printf '    %s\n' "$namespace"
+    fi
+  done
+  printf '\n'
+else
+  printf 'You do not have permission to list namespaces.\n\n'
+fi
+printf 'Using namespace "%s".\n' "$selected_namespace"
