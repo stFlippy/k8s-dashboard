@@ -7,12 +7,13 @@ import { UserManagement } from '../auth/UserManagement';
 import { SystemStatus } from './SystemStatus';
 import { ActionConfirmModal } from '../common/ActionConfirmModal';
 import type { ActionConfirmRequest } from '../common/ActionConfirmModal';
+import { changePassword } from '../../api/auth';
 
 interface Props {
   open: boolean;
   onClose: () => void;
   onLogout: () => void;
-  currentUser: { id: string; isAdmin: boolean };
+  currentUser: { id: string; isAdmin: boolean; authMode?: 'external' | 'local' };
 }
 
 const emptyInput = (): ClusterInput => ({
@@ -49,6 +50,10 @@ export function ClusterPanel({ open, onClose, onLogout, currentUser }: Props) {
   const [theme, setTheme] = useState<'dark' | 'light'>(() => window.localStorage.getItem('quaber.theme') === 'light' ? 'light' : 'dark');
   const [settingsTab, setSettingsTab] = useState<'personal' | 'clusters' | 'users' | 'system'>('personal');
   const [confirmRequest, setConfirmRequest] = useState<ActionConfirmRequest | null>(null);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [repeatPassword, setRepeatPassword] = useState('');
+  const [passwordPending, setPasswordPending] = useState(false);
 
   const clusters = clustersQuery.data ?? [];
   const secretsLocked = useMemo(() => clusters.some((cluster) => cluster.secretsLocked), [clusters]);
@@ -131,6 +136,19 @@ export function ClusterPanel({ open, onClose, onLogout, currentUser }: Props) {
     onConfirm: () => remove(cluster)
   });
 
+  const submitPasswordChange = async () => {
+    if (newPassword !== repeatPassword) { setMessage('Новые пароли не совпадают.'); return; }
+    setMessage(''); setPasswordPending(true);
+    try {
+      await changePassword(currentPassword, newPassword, repeatPassword);
+      setCurrentPassword(''); setNewPassword(''); setRepeatPassword('');
+      window.location.reload();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Не удалось сменить пароль.');
+      setPasswordPending(false);
+    }
+  };
+
   if (!open) return null;
 
   return (
@@ -148,7 +166,7 @@ export function ClusterPanel({ open, onClose, onLogout, currentUser }: Props) {
         <nav className={styles.settingsTabs}><button className={settingsTab === 'personal' ? styles.active : ''} onClick={() => setSettingsTab('personal')}>Личное</button><button className={settingsTab === 'clusters' ? styles.active : ''} onClick={() => setSettingsTab('clusters')}>Кластеры</button>{currentUser.isAdmin && <button className={settingsTab === 'users' ? styles.active : ''} onClick={() => setSettingsTab('users')}>Пользователи</button>}<button className={settingsTab === 'system' ? styles.active : ''} onClick={() => setSettingsTab('system')}>Сервер</button></nav>
 
         <div className={styles.body}>
-          {settingsTab === 'personal' && <><label className={styles.themeSwitch}><span><b>Светлая тема</b><small>Настройка сохраняется за учётной записью</small></span><input type="checkbox" checked={theme === 'light'} onChange={(event) => setTheme(event.target.checked ? 'light' : 'dark')} /></label><div className={styles.passwordCard}><h3>Пароль</h3><p>Пароль хранится и меняется на внешнем сервере авторизации. Quaber его не сохраняет.</p></div><div className={styles.actions}><button onClick={onLogout}>Выйти из учётной записи</button></div>{message && <div className={styles.message}><span>{message}</span><button className={styles.messageClose} onClick={() => setMessage('')} aria-label="Закрыть сообщение" title="Закрыть">×</button></div>}</>}
+          {settingsTab === 'personal' && <><label className={styles.themeSwitch}><span><b>Светлая тема</b><small>Настройка сохраняется за учётной записью</small></span><input type="checkbox" checked={theme === 'light'} onChange={(event) => setTheme(event.target.checked ? 'light' : 'dark')} /></label><form className={styles.passwordCard} onSubmit={(event) => { event.preventDefault(); void submitPasswordChange(); }}><h3>Пароль</h3>{currentUser.authMode === 'local' ? <><label>Текущий пароль<input type="password" autoComplete="current-password" maxLength={1024} required value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label><label>Новый пароль<input type="password" autoComplete="new-password" minLength={12} maxLength={256} required value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></label><label>Повторите новый пароль<input type="password" autoComplete="new-password" minLength={12} maxLength={256} required value={repeatPassword} onChange={(event) => setRepeatPassword(event.target.value)} /></label><button type="submit" disabled={passwordPending || newPassword !== repeatPassword}>Сменить пароль</button></> : <p>Пароль хранится и меняется на внешнем сервере авторизации. Quaber его не сохраняет.</p>}</form><div className={styles.actions}><button onClick={onLogout}>Выйти из учётной записи</button></div>{message && <div className={styles.message}><span>{message}</span><button className={styles.messageClose} onClick={() => setMessage('')} aria-label="Закрыть сообщение" title="Закрыть">×</button></div>}</>}
           {settingsTab === 'clusters' && <>
           {secretsLocked && (
             <div className={styles.warning}>
@@ -217,7 +235,7 @@ export function ClusterPanel({ open, onClose, onLogout, currentUser }: Props) {
 
           {message && <div className={styles.message}><span>{message}</span><button className={styles.messageClose} onClick={() => setMessage('')} aria-label="Закрыть сообщение" title="Закрыть">×</button></div>}
           </>}
-          {settingsTab === 'users' && currentUser.isAdmin && <UserManagement currentUserId={currentUser.id} />}
+          {settingsTab === 'users' && currentUser.isAdmin && <UserManagement currentUserId={currentUser.id} authMode={currentUser.authMode ?? 'external'} />}
           {settingsTab === 'system' && <SystemStatus />}
         </div>
       </aside>

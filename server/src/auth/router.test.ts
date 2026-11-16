@@ -8,6 +8,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 
 const directory = mkdtempSync(join(tmpdir(), 'quaber-auth-route-test-'));
 process.env.USER_DATABASE_PATH = join(directory, 'users.sqlite');
+const { applicationConfig } = await import('../config/application.ts');
+applicationConfig.authentication.mode = 'external';
 const auth = await import('./store.ts');
 const { handleAuthRequest } = await import('./router.ts');
 

@@ -1,5 +1,6 @@
 {
   "authentication": {
+    "mode": "local",
     "url": "http://127.0.0.1:4175/api/auth/verify",
     "timeoutMs": 5000
   },

@@ -16,6 +16,8 @@ old.prepare('INSERT INTO sessions VALUES(?,?,?,?,?)').run('old-token', 'old-id',
 old.prepare('INSERT INTO preferences VALUES(?,?,?)').run('old-id', '{"quaber.theme":"light"}', '2026-01-01');
 old.close();
 process.env.USER_DATABASE_PATH = path;
+const { applicationConfig } = await import('../config/application.ts');
+applicationConfig.authentication.mode = 'external';
 const auth = await import('./store.ts');
 
 test('external auth migration preserves users, roles and preferences, but expires old sessions', () => {

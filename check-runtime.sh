@@ -75,9 +75,9 @@ else
 fi
 
 if [ -r "$package_dir/quaber.config.json" ]; then
-  ok 'конфигурация сервера авторизации доступна'
+  ok 'конфигурация авторизации доступна'
 else
-  fail 'нет quaber.config.json с адресом сервера авторизации.'
+  fail 'нет quaber.config.json с режимом авторизации.'
 fi
 
 master_key=
