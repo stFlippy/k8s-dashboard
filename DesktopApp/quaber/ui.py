@@ -35,6 +35,7 @@ from .app_logging import LogSession, register_secret
 from .log_panel import LogPanel
 from .resource_list import ResourceList
 from .resource_details import ResourceDetails
+from .app_identity import application_icon
 from .quota_card import QuotaCard
 from .view_tabs import ViewTabs, VIEW_COLORS, blended_color, color_icon
 from .themes import theme as theme_colors, apply_palette, install_button_translations
@@ -157,6 +158,12 @@ class ClusterDialog(QDialog):
         self.status = QLabel(password_error)
         layout.addWidget(self.status)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        save_button = buttons.button(QDialogButtonBox.StandardButton.Save)
+        save_button.setText("Сохранить" if cluster else "Добавить")
+        cancel_button = buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        cancel_button.setText("Отмена")
+        for button in (save_button, cancel_button):
+            button.setIcon(QIcon())
         self.test_button = buttons.addButton("Проверить", QDialogButtonBox.ButtonRole.ActionRole)
         self.test_button.clicked.connect(lambda: self.connect_cluster(False))
         buttons.accepted.connect(lambda: self.connect_cluster(True))
@@ -2028,7 +2035,7 @@ class MainWindow(QMainWindow):
         brand.setPixmap(self._brand_source)
         brand.setToolTip("Quaber")
         brand.setAccessibleName("Quaber")
-        self.setWindowIcon(QIcon(str(public / "icon.webp")))
+        self.setWindowIcon(application_icon())
         QApplication.instance().setWindowIcon(self.windowIcon())
         brand_row.addWidget(brand)
         brand_name = QLabel("Quaber")

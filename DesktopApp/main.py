@@ -9,14 +9,15 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 from PyQt6.QtCore import QLockFile
 
 from quaber.storage import UserStore
+from quaber.app_identity import configure_application
 
 
 def main() -> int:
     app = QApplication(sys.argv)
-    app.setApplicationName("Quaber")
+    app_dir = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
+    configure_application(app, app_dir)
     app.quaber_console_logging = True
     app.setStyle("Fusion")
-    app_dir = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
     data_dir = app_dir / "UserData"
     try:
         data_dir.mkdir(parents=True, exist_ok=True)

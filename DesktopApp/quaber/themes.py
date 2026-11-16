@@ -16,10 +16,9 @@ class ButtonTranslations(QTranslator):
 
     def translate(self, context, source, disambiguation=None, n=-1):
         if context in ("QPlatformTheme", "QDialogButtonBox", "QMessageBox"):
-            return {"Yes": "Да", "&Yes": "Да", "Cancel": "Отмена", "&Cancel": "Отмена",
-                    "No": "Нет", "&No": "Нет", "OK": "ОК", "Save": "Сохранить",
-                    "Discard": "Отбросить", "Close": "Закрыть", "Apply": "Применить"}.get(source, "")
-        return ""
+            return {"Yes": "Да", "Cancel": "Отмена", "No": "Нет", "OK": "ОК", "Save": "Сохранить",
+                    "Discard": "Отбросить", "Close": "Закрыть", "Apply": "Применить"}.get(source.replace("&", ""))
+        return None  # Qt requires a null translation to continue looking up unknown text.
 
 
 def install_button_translations(app):
