@@ -4,19 +4,100 @@ from __future__ import annotations
 
 import copy
 import uuid
+import re
+import math
+
+MAX_VIEWS = 100
+
+
+def validate_view(value):
+    if not isinstance(value, dict):
+        raise ValueError("Вкладка должна быть объектом.")
+    result = default_view()
+    for key in ("id", "name"):
+        field = value.get(key, result[key])
+        if not isinstance(field, str) or not field.strip() or len(field) > (80 if key == "name" else 128):
+            raise ValueError(f"Некорректное поле вкладки {key}.")
+        result[key] = field.strip()
+    filters = value.get("filters", result["filters"])
+    if not isinstance(filters, dict) or any(type(v) is not bool for v in filters.values()):
+        raise ValueError("filters должен содержать только логические значения.")
+    result["filters"].update({k:v for k,v in filters.items() if k in result["filters"]})
+    for key in ("recentRestartFilter", "problemOnly", "hideFilteredNamespaces"):
+        if key in value:
+            if type(value[key]) is not bool:
+                raise ValueError(f"Некорректный флаг {key}.")
+            result[key] = value[key]
+    for key in ("selectedDeployments", "selectedNamespaces", "selectedClusterIds", "knownDeployments", "knownNamespaces", "knownClusterIds", "namespaceOrder", "deploymentOrder"):
+        field = value.get(key, result[key])
+        if field is None and key.startswith(("selected", "known")):
+            continue
+        if not isinstance(field, list) or len(field) > 5000 or any(not isinstance(v, str) or not v or len(v) > 512 for v in field):
+            raise ValueError(f"Некорректный список {key}.")
+        result[key] = list(dict.fromkeys(field))
+    color = value.get("color", "transparent")
+    if not isinstance(color, str) or (color != "transparent" and not re.fullmatch(r"#[0-9a-fA-F]{6}", color)):
+        raise ValueError("Некорректный цвет вкладки.")
+    result["color"] = color
+    for key, low, high in (("columnWidths", 36, 1200), ("rowHeights", 30, 2000)):
+        sizes = value.get(key, {})
+        if not isinstance(sizes, dict) or len(sizes) > 5000 or any(
+                not isinstance(k, str) or not k or len(k) > 512 or type(v) is not int or not low <= v <= high
+                for k, v in sizes.items()):
+            raise ValueError(f"Некорректные размеры {key}.")
+        result[key] = dict(sizes)
+    return result
+
+
+def validate_preferences(value):
+    result = copy.deepcopy(value)
+    ranges = {"deployment_width": (100, 500), "header_height": (54, 360), "sidebar_width": (160, 280),
+              "log_height": (100, 1000), "refresh_ms": (0, 300000)}
+    for key, (low, high) in ranges.items():
+        if key in result and (type(result[key]) is not int or not low <= result[key] <= high):
+            result.pop(key)
+    if result.get("theme") not in (None, "dark", "light"):
+        result["theme"] = "dark"
+    if not isinstance(result.get("filters", {}), dict) or any(type(v) is not bool for v in result.get("filters", {}).values()):
+        result["filters"] = {}
+    path = result.get("kubectl_path", "")
+    if not isinstance(path, str) or len(path) > 32767 or "\0" in path:
+        result["kubectl_path"] = ""
+    for key in ("log_visible", "read_only", "show_cluster_names", "sidebar_collapsed"):
+        if key in result and type(result[key]) is not bool:
+            result.pop(key)
+    if "deploy_mode_until" in result:
+        deadline = result["deploy_mode_until"]
+        if type(deadline) not in (int, float) or not 0 < deadline < 1e12 or not math.isfinite(deadline):
+            result.pop("deploy_mode_until")
+    if "views" in result:
+        try:
+            raw = result["views"]
+            if not isinstance(raw, list) or not 1 <= len(raw) <= MAX_VIEWS:
+                raise ValueError("Некорректный набор вкладок.")
+            views = [validate_view(v) for v in raw]
+            if len({v["id"] for v in views}) != len(views) or len({v["name"].casefold() for v in views}) != len(views):
+                raise ValueError("Повторяющиеся вкладки.")
+            result["views"] = views
+        except ValueError:
+            result["views"] = [default_view()]
+            result["active_view"] = "default"
+            result["preferences_recovered"] = True
+    return result
 
 
 def default_view() -> dict:
     return {"id": "default", "name": "Основная", "filters": {"Running": True, "Pending": True, "Failed": True, "Unknown": True},
             "recentRestartFilter": True, "problemOnly": False, "hideFilteredNamespaces": True,
             "selectedDeployments": None, "selectedNamespaces": None, "selectedClusterIds": None,
+            "knownDeployments": None, "knownNamespaces": None, "knownClusterIds": None,
             "namespaceOrder": [], "deploymentOrder": []}
 
 
 class MatrixViews:
     def __init__(self, preferences: dict):
         self.preferences = preferences
-        raw = preferences.get("views")
+        raw = validate_preferences(preferences).get("views")
         self.views = raw if isinstance(raw, list) and raw else [default_view()]
         self.active_id = preferences.get("active_view", self.views[0]["id"])
         if not any(view["id"] == self.active_id for view in self.views):
@@ -30,7 +111,29 @@ class MatrixViews:
         self.preferences["views"] = self.views
         self.preferences["active_view"] = self.active_id
 
+    def observe_scopes(self, scopes):
+        """Newly discovered objects start visible; explicit exclusions stay excluded."""
+        changed = False
+        for view in self.views:
+            for suffix, values in scopes.items():
+                known_key, selected_key = "known"+suffix, "selected"+suffix
+                known = view.get(known_key)
+                if known is not None and view.get(selected_key) is not None:
+                    added = sorted(set(values)-set(known))
+                    if added:
+                        view[selected_key] = list(dict.fromkeys(view[selected_key]+added))
+                        changed = True
+                updated = sorted(set(known or []) | set(values))
+                if known != updated:
+                    view[known_key] = updated
+                    changed = True
+        if changed:
+            self.persist()
+        return changed
+
     def add(self, name: str) -> dict:
+        if len(self.views) >= MAX_VIEWS:
+            raise ValueError("Допускается не более 100 вкладок.")
         name = name.strip()
         if not name or len(name) > 80 or any(view["name"].casefold() == name.casefold() for view in self.views):
             raise ValueError("Название вкладки пустое, слишком длинное или уже используется.")
@@ -66,8 +169,9 @@ class MatrixViews:
         if not isinstance(payload, dict) or payload.get("format") != "quaber-matrix-views" or payload.get("version") != 1:
             raise ValueError("Неверный формат файла вкладок.")
         incoming = payload.get("views")
-        if not isinstance(incoming, list) or not incoming or not all(isinstance(view, dict) for view in incoming):
+        if not isinstance(incoming, list) or not incoming or len(incoming)+len(self.views) > MAX_VIEWS:
             raise ValueError("В файле нет корректных вкладок.")
+        incoming = [validate_view(view) for view in incoming]
         available = {cluster["id"] for cluster in clusters}
         required = payload.get("requiredClusters")
         if required is None:

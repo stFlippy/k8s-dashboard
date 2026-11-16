@@ -1,0 +1,30 @@
+         6062970 function calls (6062930 primitive calls) in 5.895 seconds
+
+   Ordered by: cumulative time
+   List reduced from 111 to 22 due to restriction <22>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        1    0.652    0.652    5.919    5.919 ui.py:2246(render_matrix)
+    40000    1.553    0.000    1.553    0.000 {built-in method setData}
+   120000    0.505    0.000    1.366    0.000 widgets.py:220(pod_status)
+    40000    0.042    0.000    0.730    0.000 {method 'join' of 'str' objects}
+        1    0.001    0.001    0.698    0.698 ui.py:2285(<dictcomp>)
+       80    0.108    0.001    0.697    0.009 resource_index.py:5(index_scope)
+    80000    0.123    0.000    0.688    0.000 ui.py:2319(<genexpr>)
+   360080    0.216    0.000    0.686    0.000 {built-in method builtins.any}
+  3401880    0.587    0.000    0.587    0.000 {method 'get' of 'dict' objects}
+    40500    0.218    0.000    0.567    0.000 ui.py:87(item)
+    80002    0.025    0.000    0.387    0.000 {built-in method builtins.next}
+   240000    0.256    0.000    0.356    0.000 widgets.py:226(<genexpr>)
+    80000    0.307    0.000    0.314    0.000 resource_index.py:11(<genexpr>)
+        1    0.218    0.218    0.218    0.218 {built-in method clear}
+       80    0.076    0.001    0.175    0.002 resource_index.py:7(<dictcomp>)
+    40500    0.053    0.000    0.115    0.000 {built-in method flags}
+    40500    0.055    0.000    0.115    0.000 {built-in method setFlags}
+    80000    0.081    0.000    0.114    0.000 ui.py:2362(_recent_restart)
+    81008    0.060    0.000    0.105    0.000 enum.py:686(__call__)
+    40500    0.053    0.000    0.103    0.000 enum.py:1516(__and__)
+   240000    0.072    0.000    0.088    0.000 widgets.py:230(<genexpr>)
+    40080    0.086    0.000    0.086    0.000 {built-in method setToolTip}
+
+

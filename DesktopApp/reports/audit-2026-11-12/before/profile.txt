@@ -1,0 +1,30 @@
+         4878903 function calls (4878860 primitive calls) in 5.146 seconds
+
+   Ordered by: cumulative time
+   List reduced from 121 to 22 due to restriction <22>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        1    0.003    0.003    5.146    5.146 ui.py:2361(render_matrix)
+        1    0.657    0.657    5.142    5.142 ui.py:2371(_render_matrix_content)
+    40000    1.452    0.000    1.452    0.000 {built-in method setData}
+    80000    0.379    0.000    1.258    0.000 widgets.py:251(pod_status)
+   240080    0.147    0.000    0.751    0.000 {built-in method builtins.any}
+   160000    0.455    0.000    0.527    0.000 widgets.py:257(<genexpr>)
+    40500    0.198    0.000    0.518    0.000 ui.py:87(item)
+  2642464    0.475    0.000    0.475    0.000 {method 'get' of 'dict' objects}
+        1    0.001    0.001    0.399    0.399 ui.py:2419(<dictcomp>)
+       80    0.102    0.001    0.399    0.005 resource_index.py:5(index_scope)
+        1    0.222    0.222    0.222    0.222 {built-in method clear}
+       80    0.074    0.001    0.168    0.002 resource_index.py:7(<dictcomp>)
+    80000    0.077    0.000    0.106    0.000 ui.py:2500(_recent_restart)
+    40500    0.048    0.000    0.106    0.000 {built-in method flags}
+    40500    0.050    0.000    0.105    0.000 {built-in method setFlags}
+    80002    0.024    0.000    0.103    0.000 {built-in method builtins.next}
+    81008    0.056    0.000    0.097    0.000 enum.py:686(__call__)
+    40500    0.049    0.000    0.096    0.000 enum.py:1516(__and__)
+    40500    0.075    0.000    0.075    0.000 {built-in method setItem}
+    42500    0.073    0.000    0.073    0.000 {built-in method setRowHeight}
+    40080    0.073    0.000    0.073    0.000 {built-in method setToolTip}
+   160000    0.051    0.000    0.061    0.000 widgets.py:261(<genexpr>)
+
+

@@ -1,4 +1,4 @@
-"""Portable local state. A copy of UserData also copies access to its credentials."""
+"""Local encrypted state; Windows keys are bound to the current user by DPAPI."""
 
 from __future__ import annotations
 
@@ -8,7 +8,10 @@ import json
 import os
 import secrets
 import tempfile
+import threading
+import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -74,6 +77,7 @@ def sanitize_kubeconfig(raw: str, server: str) -> str:
 
 class UserStore:
     def __init__(self, root: Path):
+        self._lock = threading.RLock()
         self.root = root
         self.root.mkdir(parents=True, exist_ok=True)
         try:
@@ -85,8 +89,19 @@ class UserStore:
         if not self.key_file.exists():
             if (root / "clusters.json").exists():
                 raise ValueError("В UserData отсутствует portable.key. Сохранённые подключения нельзя расшифровать.")
-            self._atomic_bytes(self.key_file, secrets.token_bytes(32))
+            key = secrets.token_bytes(32)
+            if os.name == "nt":
+                from .windows_secrets import PREFIX, transform
+                key = PREFIX + transform(key)
+            self._atomic_bytes(self.key_file, key)
         self.key = self.key_file.read_bytes()
+        if os.name == "nt":
+            from .windows_secrets import PREFIX, transform
+            if self.key.startswith(PREFIX):
+                self.key = transform(self.key[len(PREFIX):], decrypt=True)
+            elif len(self.key) == 32:
+                # Atomic migration preserves the AES key and all ciphertexts.
+                self._atomic_bytes(self.key_file, PREFIX + transform(self.key))
         if len(self.key) != 32:
             raise ValueError("Повреждён ключ UserData/portable.key.")
         self.clusters_file = root / "clusters.json"
@@ -100,7 +115,14 @@ class UserStore:
                 stream.write(content)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(temp, path)
+            for attempt in range(7):
+                try:
+                    os.replace(temp, path)
+                    break
+                except PermissionError as exc:
+                    if attempt == 6:
+                        raise PermissionError(f"Не удалось сохранить {path.name}: файл занят или нет прав на замену. Закройте другие экземпляры приложения и повторите вход.") from exc
+                    time.sleep(.025 * 2**attempt)
             if os.name != "nt":
                 path.chmod(0o600)
         finally:
@@ -112,22 +134,31 @@ class UserStore:
 
     @staticmethod
     def _read_json(path: Path, fallback: object) -> object:
-        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else fallback
+        if not path.exists():
+            return fallback
+        with path.open("rb") as stream:
+            body = stream.read(4_000_001)
+        if len(body) > 4_000_000:
+            raise ValueError(f"Файл {path.name} превышает допустимые 4 МБ.")
+        return json.loads(body.decode("utf-8"))
 
     def clusters(self) -> list[dict]:
-        data = self._read_json(self.clusters_file, {"version": 1, "clusters": []})
+        with self._lock:
+            data = self._read_json(self.clusters_file, {"version": 1, "clusters": []})
         if not isinstance(data, dict) or data.get("version") != 1 or not isinstance(data.get("clusters"), list):
             raise ValueError("Повреждён UserData/clusters.json.")
         return data["clusters"]
 
     def save_clusters(self, clusters: list[dict]) -> None:
-        self._write_json(self.clusters_file, {"version": 1, "clusters": clusters})
+        with self._lock:
+            self._write_json(self.clusters_file, {"version": 1, "clusters": clusters})
 
     def preferences(self) -> dict:
         value = self._read_json(self.preferences_file, {})
         if not isinstance(value, dict):
             raise ValueError("Повреждён UserData/preferences.json.")
-        return value
+        from .views import validate_preferences
+        return validate_preferences(value)
 
     def save_preferences(self, value: dict) -> None:
         self._write_json(self.preferences_file, value)
@@ -154,7 +185,22 @@ class UserStore:
         except Exception:
             return True
 
-    def put_cluster(self, name: str, server: str, username: str, kubeconfig: str | None, enabled: bool = True, cluster_id: str | None = None) -> dict:
+    def saved_password(self, cluster: dict) -> str:
+        encrypted = cluster.get("encryptedPassword")
+        return self.decrypt(encrypted) if encrypted else ""
+
+    def put_cluster(self, name: str, server: str, username: str, kubeconfig: str | None, enabled: bool = True,
+                    cluster_id: str | None = None, *, password: str | None = None,
+                    remember_password: bool | None = None, kubectl_path: str | None = None, expected=None) -> dict:
+        with self._lock:
+            if expected is not None:
+                current = next((c for c in self.clusters() if c["id"] == cluster_id), None)
+                if current != expected:
+                    raise ValueError("Кластер изменился во время входа. Откройте форму заново.")
+            return self._put_cluster(name, server, username, kubeconfig, enabled, cluster_id,
+                                     password, remember_password, kubectl_path)
+
+    def _put_cluster(self, name, server, username, kubeconfig, enabled, cluster_id, password, remember_password, kubectl_path):
         name, username = name.strip(), username.strip()
         if not name or len(name) > 80 or any(ord(c) < 32 for c in name):
             raise ValueError("Имя кластера должно содержать от 1 до 80 символов без управляющих знаков.")
@@ -174,45 +220,121 @@ class UserStore:
         record = {"id": cluster_id or str(uuid.uuid4()), "name": name, "server": server, "username": username,
                   "enabled": bool(enabled), "encryptedKubeconfig": self.encrypt(sanitize_kubeconfig(kubeconfig, server)) if kubeconfig else existing["encryptedKubeconfig"],
                   "createdAt": existing["createdAt"] if existing else now(), "updatedAt": now()}
+        same_identity = existing and server == existing["server"] and username == existing["username"]
+        if remember_password is True:
+            if password:
+                if len(password) > 1024:
+                    raise ValueError("Пароль должен содержать не более 1024 символов.")
+                record["encryptedPassword"] = self.encrypt(password)
+            elif same_identity and existing.get("encryptedPassword"):
+                record["encryptedPassword"] = existing["encryptedPassword"]
+            else:
+                raise ValueError("Введите пароль, который нужно сохранить.")
+        elif remember_password is None and same_identity and existing.get("encryptedPassword"):
+            record["encryptedPassword"] = existing["encryptedPassword"]
+        client = kubectl_path if kubectl_path is not None else (existing or {}).get("kubectlPath", "")
+        if client:
+            if not isinstance(client, str) or len(client) > 32767 or "\0" in client:
+                raise ValueError("Некорректный путь к kubectl.")
+            record["kubectlPath"] = client.strip()
         self.save_clusters([record if item["id"] == cluster_id else item for item in clusters] if existing else [*clusters, record])
         return record
 
     def delete_cluster(self, cluster_id: str) -> None:
+        with self._lock:
+            self._delete_cluster(cluster_id)
+
+    def _delete_cluster(self, cluster_id: str) -> None:
         clusters = self.clusters()
         filtered = [item for item in clusters if item["id"] != cluster_id]
         if len(filtered) == len(clusters):
             raise ValueError("Кластер не найден.")
         self.save_clusters(filtered)
 
-    def update_logins(self, updates: dict[str, str]) -> None:
+    def update_logins(self, updates: dict[str, str], password: str | None = None, *, expected=None, remember_password=None) -> None:
+        with self._lock:
+            self._update_logins(updates, password, expected, remember_password)
+
+    def _update_logins(self, updates: dict[str, str], password: str | None = None, expected=None, remember_password=None) -> None:
         if not updates or len(updates) > 100:
             raise ValueError("Выберите от 1 до 100 кластеров.")
         clusters = self.clusters()
         selected = [cluster for cluster in clusters if cluster["id"] in updates]
         if len(selected) != len(updates):
             raise ValueError("Один из кластеров не найден.")
-        usernames = {cluster["username"].strip().casefold() for cluster in selected}
+        if expected is not None:
+            for cluster in selected:
+                if cluster != expected.get(cluster["id"]):
+                    raise ValueError("Учётная запись изменилась во время входа. Старый результат отклонён.")
+                if not cluster.get("enabled"):
+                    raise ValueError("Кластер отключён во время входа.")
+        usernames = {cluster["username"] for cluster in selected}
         if len(usernames) != 1:
             raise ValueError("Для общего входа кластеры должны иметь одного пользователя.")
+        if len({c["server"] for c in selected}) != 1:
+            raise ValueError("Общий вход между разными endpoints запрещён; войдите в каждый отдельно.")
         prepared = {cluster["id"]: self.encrypt(sanitize_kubeconfig(updates[cluster["id"]], cluster["server"])) for cluster in selected}
         timestamp = now()
         for cluster in selected:
             cluster["encryptedKubeconfig"] = prepared[cluster["id"]]
+            if remember_password is False:
+                cluster.pop("encryptedPassword", None)
+            elif password is not None and (remember_password is True or cluster.get("encryptedPassword")):
+                if not password or len(password) > 1024:
+                    raise ValueError("Введите пароль кластера (не более 1024 символов).")
+                cluster["encryptedPassword"] = self.encrypt(password)
             cluster["updatedAt"] = timestamp
         self.save_clusters(clusters)
 
-    def audit(self, action: str, cluster_id: str, namespace: str = "", name: str = "") -> None:
+    def audit(self, action: str, cluster_id: str, namespace: str = "", name: str = "", **details) -> None:
         # No request bodies, tokens, passwords or command strings enter the audit file.
-        record = {"time": now(), "action": action, "clusterId": cluster_id, "namespace": namespace, "name": name}
-        with (self.root / "audit.jsonl").open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(record, ensure_ascii=False) + "\n")
-            stream.flush()
-            os.fsync(stream.fileno())
+        record = {"time": now(), "action": action, "clusterId": cluster_id, "namespace": namespace, "name": name, **details}
+        with self._lock:
+            path = self.root / "audit.jsonl"
+            if path.exists() and path.stat().st_size > 2_000_000:
+                for index in range(3, 0, -1):
+                    source = path if index == 1 else self.root / f"audit.jsonl.{index-1}"
+                    if source.exists():
+                        os.replace(source, self.root / f"audit.jsonl.{index}")
+            with path.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+
+    @contextmanager
+    def operation(self, action, cluster_id, namespace, name, **details):
+        correlation = str(uuid.uuid4())
+        cluster = next((c for c in self.clusters() if c["id"] == cluster_id), {})
+        metadata = dict(operationId=correlation, username=cluster.get("username", ""), **details)
+        # A failed intent write prevents the operation from starting.
+        self.audit(action, cluster_id, namespace, name, phase="intent", **metadata)
+        try:
+            yield correlation
+        except Exception as exc:
+            try:
+                self.audit(action, cluster_id, namespace, name, phase="unknown", errorType=type(exc).__name__, **metadata)
+            except OSError:
+                pass
+            raise
+        else:
+            try:
+                self.audit(action, cluster_id, namespace, name, phase="success", **metadata)
+            except OSError as exc:
+                raise RuntimeError("Операция выполнена, но результат аудита не записан. Проверьте состояние перед повтором.") from exc
 
     def recent_audit(self, limit: int = 200) -> list[dict]:
         path = self.root / "audit.jsonl"
         if not path.exists():
             return []
-        with path.open(encoding="utf-8") as stream:
+        with self._lock, path.open("rb") as stream:
+            stream.seek(max(0, path.stat().st_size-1_000_000))
+            if stream.tell():
+                stream.readline()
             lines = deque(stream, maxlen=min(1000, max(1, limit)))
-        return [json.loads(line) for line in lines if line.strip()]
+        records = []
+        for line in lines:
+            try:
+                records.append(json.loads(line))
+            except (ValueError, UnicodeError):
+                continue
+        return records
