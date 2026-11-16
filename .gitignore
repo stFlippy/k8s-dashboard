@@ -40,3 +40,8 @@ addons/*.csv
 *.pid
 .DS_Store
 .vscode/
+DesktopApp/venv/lib64
+DesktopApp/venv/pyvenv.cfg
+DesktopApp/venv/bin/python
+DesktopApp/venv/bin/python3
+DesktopApp/venv/bin/python3.12
