@@ -106,17 +106,17 @@ export function App() {
   const [preferencesReady, setPreferencesReady] = useState(false);
   useEffect(() => { void getCurrentUser().then(setUser).catch(() => setUser(null)); }, []);
   useEffect(() => {
-    if (!user) { setPreferencesReady(false); return; }
+    if (!user || user.mustChangePassword) { setPreferencesReady(false); return; }
     let active = true;
     void getPreferences().then((preferences) => { if (!active) return; Object.keys(window.localStorage).filter((key) => key.startsWith('quaber.')).forEach((key) => window.localStorage.removeItem(key)); Object.entries(preferences).forEach(([key,value]) => { if (key.startsWith('quaber.') && typeof value === 'string') window.localStorage.setItem(key,value); }); setPreferencesReady(true); }).catch(() => setPreferencesReady(true));
     return () => { active=false; };
-  }, [user?.id]);
+  }, [user?.id, user?.mustChangePassword]);
   useEffect(() => {
-    if (!user || !preferencesReady) return;
+    if (!user || user.mustChangePassword || !preferencesReady) return;
     const persist=()=>{const values:Record<string,string>={};for(let index=0;index<window.localStorage.length;index++){const key=window.localStorage.key(index);if(key?.startsWith('quaber.'))values[key]=window.localStorage.getItem(key)??'';}void savePreferences(values).catch(()=>undefined);};
     const timer=window.setInterval(persist,3000);window.addEventListener('beforeunload',persist);return()=>{window.clearInterval(timer);window.removeEventListener('beforeunload',persist);persist();};
-  }, [preferencesReady,user?.id]);
-  if (user === undefined || (user && !preferencesReady)) return <div className="auth-loading">Загрузка настроек пользователя…</div>;
-  if (!user) return <AuthScreen onAuthenticated={setUser} />;
+  }, [preferencesReady,user?.id,user?.mustChangePassword]);
+  if (user === undefined || (user && !user.mustChangePassword && !preferencesReady)) return <div className="auth-loading">Загрузка настроек пользователя…</div>;
+  if (!user || user.mustChangePassword) return <AuthScreen user={user} onAuthenticated={(next) => { if (!next) queryClient.clear(); setUser(next); }} />;
   return <QueryClientProvider client={queryClient}><Shell user={user} onLoggedOut={() => { queryClient.clear(); setUser(null); }} /></QueryClientProvider>;
 }

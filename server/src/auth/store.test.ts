@@ -7,6 +7,8 @@ import { DatabaseSync } from 'node:sqlite';
 
 const directory = mkdtempSync(join(tmpdir(), 'quaber-auth-test-'));
 process.env.USER_DATABASE_PATH = join(directory, 'users.sqlite');
+const { applicationConfig } = await import('../config/application.ts');
+applicationConfig.authentication.mode = 'external';
 const auth = await import('./store.ts');
 
 test('first externally verified user is administrator, later users are not', () => {

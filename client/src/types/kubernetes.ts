@@ -1,5 +1,5 @@
 export type ClusterAuthType = 'kubectl-login';
-export interface UserAccount { id: string; username: string; mustChangePassword: boolean; isAdmin: boolean; csrf?: string; }
+export interface UserAccount { id: string; username: string; mustChangePassword: boolean; isAdmin: boolean; csrf?: string; authMode?: 'external' | 'local'; }
 
 export interface Cluster {
   id: string;

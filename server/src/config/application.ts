@@ -1,8 +1,8 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { runtimeFile } from './runtime.ts';
 
 interface ApplicationConfig {
-  authentication: { url: string | null; timeoutMs: number };
+  authentication: { mode: 'external' | 'local'; url: string | null; timeoutMs: number };
   logging: {
     enabled: boolean;
     level: 'debug' | 'info' | 'error';
@@ -10,10 +10,11 @@ interface ApplicationConfig {
   mutationAudit: { retentionDays: number };
 }
 
-const defaults: ApplicationConfig = { authentication: { url: null, timeoutMs: 5000 }, logging: { enabled: true, level: 'info' }, mutationAudit: { retentionDays: 30 } };
+const defaults: ApplicationConfig = { authentication: { mode: 'external', url: null, timeoutMs: 5000 }, logging: { enabled: true, level: 'info' }, mutationAudit: { retentionDays: 30 } };
 const configPath = runtimeFile('quaber.config.json');
 
 function loadConfig(): ApplicationConfig {
+  if (!existsSync(configPath)) return defaults;
   try {
     const parsed = JSON.parse(readFileSync(configPath, 'utf8')) as Partial<ApplicationConfig>;
     if (parsed.logging?.enabled !== undefined && typeof parsed.logging.enabled !== 'boolean') {
@@ -24,6 +25,8 @@ function loadConfig(): ApplicationConfig {
     }
     const retentionDays = parsed.mutationAudit?.retentionDays ?? defaults.mutationAudit.retentionDays;
     if (!Number.isInteger(retentionDays) || retentionDays < 1 || retentionDays > 3650) throw new Error('mutationAudit.retentionDays must be an integer between 1 and 3650.');
+    const authMode = parsed.authentication?.mode ?? defaults.authentication.mode;
+    if (authMode !== 'external' && authMode !== 'local') throw new Error("authentication.mode must be 'external' or 'local'.");
     const authUrl = parsed.authentication?.url ?? defaults.authentication.url;
     if (authUrl !== null) {
       if (typeof authUrl !== 'string') throw new Error('authentication.url must be a URL.');
@@ -36,7 +39,7 @@ function loadConfig(): ApplicationConfig {
     const timeoutMs = parsed.authentication?.timeoutMs ?? defaults.authentication.timeoutMs;
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 30000) throw new Error('authentication.timeoutMs must be 1000–30000.');
     return {
-      authentication: { url: authUrl, timeoutMs },
+      authentication: { mode: authMode, url: authUrl, timeoutMs },
       logging: {
         enabled: parsed.logging?.enabled ?? defaults.logging.enabled,
         level: parsed.logging?.level ?? defaults.logging.level
@@ -45,8 +48,7 @@ function loadConfig(): ApplicationConfig {
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : 'unknown configuration error';
-    console.error(`[ERROR] configuration file=${configPath} message=${message}`);
-    return defaults;
+    throw new Error(`Invalid configuration file ${configPath}: ${message}`, { cause: error });
   }
 }
 
