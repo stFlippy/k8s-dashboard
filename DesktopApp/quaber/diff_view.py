@@ -1,8 +1,8 @@
 """Aligned before/after diff with original line numbers and changed-line colors."""
 import re
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor, QTextCursor, QTextFormat
-from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QSplitter, QTextEdit, QPlainTextEdit
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QColor, QTextCursor, QTextFormat
+from PyQt5.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QSplitter, QTextEdit, QPlainTextEdit
 from .widgets import NumberedEditor
 from .themes import code_font
 

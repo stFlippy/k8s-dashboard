@@ -6,9 +6,9 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
-from PyQt6.QtCore import QPoint, QPointF, Qt, QEvent
-from PyQt6.QtGui import QMouseEvent
-from PyQt6.QtTest import QTest
+from PyQt5.QtCore import QPoint, QPointF, Qt, QEvent
+from PyQt5.QtGui import QMouseEvent
+from PyQt5.QtTest import QTest
 
 from quaber.inventory import APP_LABEL, CSV_FIELDS, inventory_record, collect_inventory, compare_versions, write_inventory
 from quaber.ui import MetricChart
@@ -138,9 +138,9 @@ class NewPageTests(ShellFixture, unittest.TestCase):
         page.clusters.selected = {clusters[0]["id"]}
         page.refresh_data()
         self.assertEqual(page.table.rowCount(), 2)
-        self.assertEqual(page.table.columnCount(), 8)
-        self.assertEqual([page.table.item(1, column).text() for column in range(8)],
-                         [clusters[0]["server"], "jobs", "CronJob", "nightly", "registry/nightly:3", "cron-branch", "pipeline", "3"])
+        self.assertEqual(page.table.columnCount(), 9)
+        self.assertEqual([page.table.item(1, column).text() for column in range(9)],
+                         [clusters[0]["server"], "jobs", "CronJob", "nightly", "registry/nightly:3", "cron-branch", "pipeline", "3", "—"])
         self.assertFalse(self.window.shell_actions.mode.isEnabled())
         self.assertTrue(page.export_button.isEnabled())
         with tempfile.TemporaryDirectory() as folder, patch("quaber.inventory_pages.QFileDialog.getSaveFileName", return_value=(str(Path(folder)/"dump.csv"), "CSV")):
@@ -152,7 +152,7 @@ class NewPageTests(ShellFixture, unittest.TestCase):
             self.assertEqual(rows[0]["HOST"], clusters[0]["server"])
             self.assertEqual(rows[0]["CONTAINER_IMAGES"], "registry/app:1;registry/init:2")
             self.assertEqual(rows[0]["deployed by"], "Владимир")
-            self.assertEqual([[page.table.item(row, column).text() for column in range(8)] for row in range(2)],
+            self.assertEqual([[page.table.item(row, column).text() for column in range(9)] for row in range(2)],
                              [[row[key] for key in CSV_FIELDS] for row in rows])
             self.assertFalse((Path(folder)/"dump.log").exists())
         self.api.scale.assert_not_called()
@@ -165,11 +165,11 @@ class NewPageTests(ShellFixture, unittest.TestCase):
         self.app.processEvents()
         self.assertEqual(page.label_keys, ["app.kubernetes.io/version"])
         self.assertIn("GIT_BRANCH", page.available_labels)
-        self.assertEqual(page.table.item(0, 1).text(), "Совпадает")
+        self.assertEqual(page.table.item(0, 0).data(Qt.ItemDataRole.UserRole), "Совпадает")
         self.window.inventory.get(clusters[1]["id"])["records"][0]["labels"]["GIT_BRANCH"] = "release"
         page.label_keys = ["GIT_BRANCH"]
         page.render()
-        self.assertEqual(page.table.item(0, 1).text(), "Различается")
+        self.assertEqual(page.table.item(0, 0).data(Qt.ItemDataRole.UserRole), "Различается")
         self.assertFalse(self.window.shell_actions.mode.isEnabled())
         self.assertEqual([button.text() for button in self.window.nav_buttons][-2:], ["Dumps", "Сверка версий"])
         with patch.object(page, "refresh_data") as refreshed:
@@ -180,7 +180,7 @@ class NewPageTests(ShellFixture, unittest.TestCase):
                 record["labels"] = {APP_LABEL: record["labels"][APP_LABEL]}
         page.label_keys = None
         page.render()
-        self.assertEqual(page.table.item(0, 1).text(), "Нет меток версий")
+        self.assertEqual(page.table.item(0, 0).data(Qt.ItemDataRole.UserRole), "Нет меток версий")
 
     def test_comparison_colors_explain_matches_differences_and_unknowns_in_both_themes(self):
         clusters = self.clusters()
@@ -195,24 +195,24 @@ class NewPageTests(ShellFixture, unittest.TestCase):
                 for column in range(page.table.columnCount()):
                     color = page.table.item(0, column).data(Qt.ItemDataRole.ForegroundRole)
                     self.assertGreater(color.green(), color.red())
-                self.assertIn("одинаковые", page.table.item(0, 1).data(Qt.ItemDataRole.ToolTipRole))
+                self.assertIn("одинаковые", page.table.item(0, 0).data(Qt.ItemDataRole.ToolTipRole))
                 second["records"][0]["labels"]["app.kubernetes.io/version"] = "2"
                 page.render()
-                self.assertEqual(page.table.item(0, 1).text(), "Различается")
+                self.assertEqual(page.table.item(0, 0).data(Qt.ItemDataRole.UserRole), "Различается")
                 for column in range(page.table.columnCount()):
                     color = page.table.item(0, column).data(Qt.ItemDataRole.ForegroundRole)
                     self.assertGreater(color.red(), color.green())
-                self.assertIn("различаются", page.table.item(0, 1).data(Qt.ItemDataRole.ToolTipRole))
+                self.assertIn("различаются", page.table.item(0, 0).data(Qt.ItemDataRole.ToolTipRole))
                 second["errors"] = ["Forbidden"]
                 page.render()
-                self.assertEqual(page.table.item(0, 1).text(), "Неполные данные")
-                self.assertIsNone(page.table.item(0, 1).data(Qt.ItemDataRole.ForegroundRole))
-                self.assertIn("ошибки", page.table.item(0, 1).data(Qt.ItemDataRole.ToolTipRole))
+                self.assertEqual(page.table.item(0, 0).data(Qt.ItemDataRole.UserRole), "Неполные данные")
+                self.assertIsNone(page.table.item(0, 0).data(Qt.ItemDataRole.ForegroundRole))
+                self.assertIn("ошибки", page.table.item(0, 0).data(Qt.ItemDataRole.ToolTipRole))
                 second["errors"] = []
         second["records"] = []
         page.render()
-        self.assertEqual(page.table.item(0, 1).text(), "Отсутствует")
-        color = page.table.item(0, 3).data(Qt.ItemDataRole.ForegroundRole)
+        self.assertEqual(page.table.item(0, 0).data(Qt.ItemDataRole.UserRole), "Отсутствует")
+        color = page.table.item(0, 2).data(Qt.ItemDataRole.ForegroundRole)
         self.assertGreater(color.red(), color.green())
 
     def test_latest_inventory_generation_wins(self):

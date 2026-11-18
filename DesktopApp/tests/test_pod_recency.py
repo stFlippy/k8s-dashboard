@@ -4,9 +4,9 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication
+from PyQt5.QtCore import Qt
+from PyQt5.QtTest import QTest
+from PyQt5.QtWidgets import QApplication
 
 from quaber.pod_recency import DeploymentMode, RECENT_SECONDS, recent_activity_deadline
 from quaber.views import validate_preferences
@@ -58,14 +58,14 @@ class PodActivityTests(unittest.TestCase):
         for phase in ("Running", "Pending", "Failed", "Unknown"):
             pod = {"status": {"phase": phase}, "_recent": True}
             with self.subTest(phase=phase):
-                self.assertEqual(pod_marker_style(pod), (COLORS["Restart"], True))
-                expected = (COLORS["Running"], False) if phase == "Running" else (COLORS["Restart"], True)
+                self.assertEqual(pod_marker_style(pod), (COLORS["Restart"], True) if phase == "Running" else (COLORS[phase], False))
+                expected = (COLORS[phase], False)
                 self.assertEqual(pod_marker_style(pod, True), expected)
                 self.assertTrue(pod["_recent"])
                 pod["_stale"] = True
                 self.assertEqual(pod_marker_style(pod, True), (COLORS["Unknown"], False))
         unready = {"status": {"phase": "Running", "conditions": [{"type": "Ready", "status": "False"}]}, "_recent": True}
-        self.assertEqual(pod_marker_style(unready, True), (COLORS["Restart"], True))
+        self.assertEqual(pod_marker_style(unready, True), (COLORS["Pending"], False))
 
 
 class DeploymentModeTests(unittest.TestCase):

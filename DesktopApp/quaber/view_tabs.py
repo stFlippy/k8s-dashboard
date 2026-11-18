@@ -1,8 +1,8 @@
 """Matrix tabs with independent, readable background colors."""
 import re
-from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QColor, QPainter, QIcon, QPixmap
-from PyQt6.QtWidgets import QTabBar
+from PyQt5.QtCore import Qt, QSize
+from PyQt5.QtGui import QColor, QPainter, QIcon, QPixmap
+from PyQt5.QtWidgets import QTabBar
 from .themes import theme
 
 VIEW_COLORS = (("transparent", "Без цвета"), ("#3b82f6", "Синий"),
@@ -53,7 +53,7 @@ class ViewTabs(QTabBar):
         return self.tabSizeHint(index)
 
     def mouseMoveEvent(self, event):
-        hovered = self.tabAt(event.position().toPoint())
+        hovered = self.tabAt(event.pos())
         if hovered != self.hovered_tab:
             self.hovered_tab = hovered
             self.update()

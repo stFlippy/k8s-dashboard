@@ -10,10 +10,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from PyQt6.QtCore import Qt, QPoint, QTimer
-from PyQt6.QtGui import QTextCursor
-from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QWidget, QMessageBox
+from PyQt5.QtCore import Qt, QPoint, QTimer
+from PyQt5.QtGui import QTextCursor
+from PyQt5.QtTest import QTest
+from PyQt5.QtWidgets import QApplication, QWidget, QMessageBox
 
 from quaber.pod_logs import PodLogs
 from quaber.storage import UserStore
@@ -163,7 +163,7 @@ class LogUXTests(unittest.TestCase):
         self.view.expanded.setChecked(True)
         with tempfile.TemporaryDirectory() as folder:
             destination = str(Path(folder)/"full.log")
-            with patch("quaber.pod_logs.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes), \
+            with patch("quaber.pod_logs.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes),\
                  patch("quaber.pod_logs.QFileDialog.getSaveFileName", return_value=(destination, "")):
                 self.bg.finish(execute=True)
             self.assertFalse(self.view.expanded.isChecked())
@@ -186,7 +186,7 @@ class ShellFixture:
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         store = UserStore(Path(self.temp.name) / "UserData")
-        with patch("quaber.ui.locate_kubectl", return_value=Path("unused.exe")), \
+        with patch("quaber.ui.locate_kubectl", return_value=Path("unused.exe")),\
              patch.object(MainWindow, "refresh"), patch.object(MainWindow, "_prompt_expired_login"):
             self.window = MainWindow(store, Path(self.temp.name))
             self.window.timer.stop()
@@ -264,7 +264,7 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.window.tabs.currentIndex(), 0)
 
     def test_admin_button_requires_math_and_settings_do_not_duplicate_it(self):
-        from PyQt6.QtWidgets import QToolBar, QCheckBox, QDialog
+        from PyQt5.QtWidgets import QToolBar, QCheckBox, QDialog
         mode = self.window.shell_actions.mode
         self.open_panel("deployment")
         self.assertFalse(mode.isChecked())
@@ -292,11 +292,11 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
         self.assertFalse(any("Только" in label for label in observations))
 
     def test_pod_menu_has_requested_actions_without_redundant_buttons(self):
-        from PyQt6.QtWidgets import QPushButton
+        from PyQt5.QtWidgets import QPushButton
         panel = self.open_panel("deployment")
         menu = self.window.resource_actions.menu(self.identity)
         labels = [a.text() for a in menu.actions()]
-        for label in ("Открыть POD", "terminal", "Логи", "События", "Открыть YAML", "Скопировать расположение", "Удалить Pod…"):
+        for label in ("Открыть POD", "Terminal", "Логи", "События", "Открыть YAML", "Скопировать расположение", "Удалить Pod…"):
             self.assertIn(label, labels)
         for label in ("Открыть обзор", "Команды в контейнере", "Скопировать имя", "Разрешить изменения…"):
             self.assertNotIn(label, labels)
@@ -304,7 +304,7 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
         menu.deleteLater()
 
     def test_location_picker_buttons_capture_the_target(self):
-        from PyQt6.QtWidgets import QPushButton, QComboBox
+        from PyQt5.QtWidgets import QPushButton, QComboBox
         self.window.snapshot = {"c": {"name": "Production"}}
         self.window.matrix_data = {(0, column): ("c", namespace, "app", self.deployment, [])
                                    for column, namespace in ((1, "one"), (2, "two"))}
@@ -320,7 +320,7 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
         self.assertEqual(observations, [[]])
 
     def test_replica_fact_and_refresh_periods_are_explicit(self):
-        from PyQt6.QtWidgets import QLabel
+        from PyQt5.QtWidgets import QLabel
         from quaber.ui import MetricsWidget
         self.deployment["spec"]["replicas"] = 5
         self.deployment["status"] = {"replicas": 6, "readyReplicas": 3, "availableReplicas": 3}
@@ -417,17 +417,17 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
 
     def test_only_readonly_unlock_uses_mathematics(self):
         from quaber.ui import confirm
-        with patch("quaber.ui.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes), \
+        with patch("quaber.ui.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes),\
              patch("quaber.ui.QInputDialog.getInt") as maths:
             self.assertTrue(confirm(self.window, "Операция", "Продолжить?"))
             maths.assert_not_called()
-        with patch("quaber.ui.random.randint", side_effect=[12, 33]), \
+        with patch("quaber.ui.random.randint", side_effect=[12, 33]),\
              patch("quaber.ui.QInputDialog.getInt", return_value=(45, True)) as maths:
             self.assertTrue(confirm(self.window, "Разблокировать", "Продолжить?", arithmetic=True))
             maths.assert_called_once()
 
     def test_log_refresh_button_removed_and_brand_assets_are_loaded(self):
-        from PyQt6.QtWidgets import QLabel
+        from PyQt5.QtWidgets import QLabel
         panel = self.open_panel("pod")
         self.assertFalse(hasattr(panel.log_view, "refresh_button"))
         brand = self.window.sidebar.findChild(QLabel, "brand")
@@ -495,13 +495,13 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
         self.api.scale.assert_called_once_with("c", "ns", "app", 2, "d", "1")
         panel.pod_donut.set_pods([self.pod, {"status": {"phase": "Pending"}}])
         self.assertEqual(panel.pod_donut.counts, {"Running": 1, "Pending": 1})
-        from PyQt6.QtWidgets import QLabel
+        from PyQt5.QtWidgets import QLabel
         self.assertEqual(sum(label.text() == "Deployment details" for label in panel.findChildren(QLabel)), 1)
         self.assertFalse(panel.details.toPlainText().startswith("app\n"))
 
     def test_fixed_sidebar_brand_contrast_and_russian_buttons(self):
-        from PyQt6.QtWidgets import QLabel
-        from PyQt6.QtGui import QFontInfo
+        from PyQt5.QtWidgets import QLabel
+        from PyQt5.QtGui import QFontInfo
         self.assertEqual(self.window.sidebar.minimumWidth(), 240)
         self.assertEqual(self.window.sidebar.maximumWidth(), 240)
         self.assertEqual(self.window.sidebar.findChild(QLabel, "brandName").text(), "Quaber")
@@ -545,7 +545,7 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
             opened.assert_called_once_with("c", "pod", "ns", "app-pod", expected_uid=self.pod["metadata"]["uid"])
 
     def test_settings_group_controls_above_list_and_general_below(self):
-        from PyQt6.QtWidgets import QPushButton, QWidget
+        from PyQt5.QtWidgets import QPushButton, QWidget
         from quaber.resource_list import ResourceList
         def inspect(dialog):
             dialog.show()
@@ -566,7 +566,7 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
     def test_location_buttons_elide_without_losing_identity(self):
         from quaber.resource_actions import choose_location
         from quaber.widgets import ElidedButton
-        from PyQt6.QtWidgets import QDialog
+        from PyQt5.QtWidgets import QDialog
         identity = ("c", "deployment", "ns", "app", "d")
         label = "namespace-" + "very-long-"*70
         def inspect(dialog):
@@ -578,7 +578,7 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
             self.assertLess(dialog.width(), 600)
             button.click()
             return QDialog.DialogCode.Accepted
-        with patch.object(QDialog, "exec", inspect):
+        with patch.object(QDialog, "exec_", inspect):
             self.assertEqual(choose_location(self.window, [(label, identity)]), identity)
 
     def test_namespace_setting_also_controls_location_labels(self):
@@ -595,9 +595,9 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
 
     def test_hovering_name_highlights_only_its_row_and_names_can_be_reordered(self):
         from quaber.widgets import PodMatrix
-        from PyQt6.QtCore import QEvent, QPointF
-        from PyQt6.QtGui import QMouseEvent
-        from PyQt6.QtWidgets import QTableWidgetItem
+        from PyQt5.QtCore import QEvent, QPointF
+        from PyQt5.QtGui import QMouseEvent
+        from PyQt5.QtWidgets import QTableWidgetItem
         matrix = PodMatrix()
         self.addCleanup(matrix.deleteLater)
         matrix.setRowCount(2)
@@ -630,7 +630,7 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
     def test_resource_confirmation_has_contrasting_target_and_yes_no(self):
         from quaber.confirmations import ResourceConfirmation
         from quaber.themes import write_background
-        from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QFrame, QLineEdit, QPlainTextEdit, QCheckBox
+        from PyQt5.QtWidgets import QDialog, QDialogButtonBox, QFrame, QLineEdit, QPlainTextEdit, QCheckBox
         for light in (False, True):
             self.window._select_theme("light" if light else "dark")
             target = "Deployment · Production / ns / app<&>"
@@ -650,9 +650,9 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
             self.window.preferences["read_only"] = False
             self.window.shell_actions.idle_timer.start()
             QTimer.singleShot(0, yes.click)
-            self.assertEqual(dialog.exec(), QDialog.DialogCode.Accepted)
+            self.assertEqual(dialog.exec_(), QDialog.DialogCode.Accepted)
             QTimer.singleShot(0, no.click)
-            self.assertEqual(dialog.exec(), QDialog.DialogCode.Rejected)
+            self.assertEqual(dialog.exec_(), QDialog.DialogCode.Rejected)
 
     def test_scale_arrows_need_no_confirmation_and_keep_readonly_guard(self):
         panel = self.open_panel("deployment")
@@ -660,8 +660,8 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
         for value in (0, 50):
             self.window.set_read_only(False)
             self.api.scale.reset_mock()
-            with patch("quaber.ui.confirm", return_value=True) as decision, \
-                 patch("quaber.ui.QInputDialog.getText", side_effect=AssertionError("unexpected typing")), \
+            with patch("quaber.ui.confirm", return_value=True) as decision,\
+                 patch("quaber.ui.QInputDialog.getText", side_effect=AssertionError("unexpected typing")),\
                  patch.object(panel, "_updated"):
                 panel._apply_scale(copy.deepcopy(panel.resource), value)
                 self.wait()
@@ -682,8 +682,8 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
         edited = copy.deepcopy(panel.resource)
         edited["spec"]["replicas"] = 3
         panel.yaml_editor.setPlainText(yaml.safe_dump(edited))
-        with patch("quaber.ui.confirm", return_value=True) as decision, \
-             patch("quaber.ui.QInputDialog.getText", side_effect=AssertionError("unexpected typing")), \
+        with patch("quaber.ui.confirm", return_value=True) as decision,\
+             patch("quaber.ui.QInputDialog.getText", side_effect=AssertionError("unexpected typing")),\
              patch("quaber.ui.run_dialog") as separate_preview, patch.object(panel, "_updated"):
             panel.save_yaml()
             self.wait()
@@ -940,7 +940,7 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
         self.window.set_read_only(False)
         panel.yaml_editor.editor.insertPlainText("# unsaved\n")
         draft = panel.yaml_editor.toPlainText()
-        with patch("quaber.ui.QMessageBox.warning", return_value=QMessageBox.StandardButton.Cancel), \
+        with patch("quaber.ui.QMessageBox.warning", return_value=QMessageBox.StandardButton.Cancel),\
              patch("quaber.ui.confirm") as confirmation:
             panel.restart()
         confirmation.assert_not_called()
@@ -953,7 +953,7 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
         self.app.processEvents()
         table = panel.pod_table
         entry = table.topLevelItem(0)
-        with patch.object(self.window, "open_resource") as opened, \
+        with patch.object(self.window, "open_resource") as opened,\
              patch.object(self.window.resource_actions, "show") as show:
             position = table.visualItemRect(entry).center()
             QTest.mouseClick(table.viewport(), Qt.MouseButton.LeftButton, pos=position)
@@ -980,7 +980,7 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
             self.window.resource_actions.delete_pod(self.identity)
             changed = copy.deepcopy(self.pod)
             changed["metadata"]["uid"] = "replacement"
-            with patch("quaber.resource_actions.QMessageBox.warning"), \
+            with patch("quaber.resource_actions.QMessageBox.warning"),\
                  patch("quaber.resource_actions.confirm_pod_removal") as confirm:
                 bg.finish(changed)
             confirm.assert_not_called()

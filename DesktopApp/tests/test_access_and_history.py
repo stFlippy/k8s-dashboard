@@ -5,9 +5,9 @@ import unittest
 import urllib.error
 from contextlib import nullcontext
 from unittest.mock import Mock, patch
-from PyQt6.QtCore import QPoint, Qt, QTimer
-from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QPushButton, QMessageBox
+from PyQt5.QtCore import QPoint, Qt, QTimer
+from PyQt5.QtTest import QTest
+from PyQt5.QtWidgets import QApplication, QPushButton, QMessageBox
 
 from quaber.access import scope_access, server_forbidden
 from quaber.container_selection import preferred_container
@@ -209,4 +209,4 @@ class NextInterfaceTests(ShellFixture, unittest.TestCase):
         deferred.finish(execute=True)
         self.app.processEvents()
         self.assertTrue(self.window.preferences["read_only"])
-        self.assertIn("Нет доступа к terminal", panel.console_output.toPlainText())
+        self.assertIn("Нет доступа к Terminal", panel.console_output.toPlainText())

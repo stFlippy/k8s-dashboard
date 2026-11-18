@@ -6,9 +6,9 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QApplication, QWidget
-from PyQt6.QtTest import QTest
+from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import QApplication, QWidget
+from PyQt5.QtTest import QTest
 from quaber.app_logging import LogSession, SafeFormatter, register_secret, redact
 from quaber.log_panel import LogPanel
 

@@ -3,13 +3,14 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QEvent, QTimer
-from PyQt6.QtGui import QTextCursor
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+from PyQt5.QtCore import Qt, QEvent, QTimer
+from PyQt5.QtGui import QTextCursor
+from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QPlainTextEdit, QFileDialog, QMessageBox)
 from .widgets import FullCheckBox, AppComboBox
 from .themes import code_font
 from .kubernetes import LogTooLarge
+from .polling import polling_allowed, mark_poll_timer
 from .container_selection import preferred_container
 
 TAIL_LINES = 1000
@@ -43,7 +44,7 @@ class PodLogs(QWidget):
             self.container.setCurrentText(preferred)
         self.container.setMinimumWidth(100)
         self.container.setMaximumWidth(210)
-        self.container.setToolTip("Контейнер для логов. Выбор не меняет контейнер для terminal.")
+        self.container.setToolTip("Контейнер для логов. Выбор не меняет контейнер для Terminal.")
         row.addWidget(self.container)
         self.search = QLineEdit()
         self.search.setMaximumWidth(300)
@@ -133,6 +134,7 @@ class PodLogs(QWidget):
         self.timer.setInterval(5000)
         self.timer.timeout.connect(lambda: self.load() if self.isVisible() else None)
         self.timer.start()
+        mark_poll_timer(self.timer)
         QTimer.singleShot(0, self.load)
 
     def pause_follow(self, *_):
@@ -143,7 +145,7 @@ class PodLogs(QWidget):
         QTimer.singleShot(0, self.resume_follow)
 
     def eventFilter(self, watched, event):
-        from PyQt6 import sip
+        from PyQt5 import sip
         output = getattr(self, "output", None)
         if output is None or sip.isdeleted(output):
             return super().eventFilter(watched, event)
@@ -172,6 +174,8 @@ class PodLogs(QWidget):
         self.output.verticalScrollBar().setValue(self.output.verticalScrollBar().maximum())
 
     def load(self, *_):
+        if not polling_allowed(self):
+            return
         if self._full_prompt:
             return
         wanted = (self.container.currentText(), self.previous.isChecked(), None if self.expanded.isChecked() else TAIL_LINES)

@@ -8,15 +8,16 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch, Mock
 
-from PyQt6.QtCore import QTimer, Qt, QPoint
-from PyQt6.QtWidgets import QApplication, QWidget, QDialog, QComboBox, QProgressBar
-from PyQt6.QtTest import QTest
+from PyQt5.QtCore import QTimer, Qt, QPoint
+from PyQt5.QtWidgets import QApplication, QWidget, QDialog, QComboBox, QProgressBar
+from PyQt5.QtTest import QTest
 
 from quaber.storage import UserStore
 from quaber.ui import Background, ClusterDialog, LoginGroupsDialog, MainWindow, ResourceDialog
 from test_storage import CONFIG
 from quaber.widgets import CodeEditor, NamespaceHeader, StatusDelegate
 from quaber.kubernetes import ResourceNotFoundError
+from qt_helpers import drag_move
 
 
 class UITests(unittest.TestCase):
@@ -308,8 +309,8 @@ class UITests(unittest.TestCase):
 
     def test_matrix_hover_follows_frozen_column_and_clears_on_scroll(self):
         from quaber.widgets import PodMatrix
-        from PyQt6.QtCore import QEvent
-        from PyQt6.QtWidgets import QTableWidgetItem
+        from PyQt5.QtCore import QEvent
+        from PyQt5.QtWidgets import QTableWidgetItem
         matrix = PodMatrix()
         self.addCleanup(matrix.deleteLater)
         matrix.resize(400, 200)
@@ -364,7 +365,7 @@ class UITests(unittest.TestCase):
 
     def test_resource_list_blank_space_clears_selection(self):
         from quaber.resource_list import ResourceList
-        from PyQt6.QtWidgets import QTableWidgetItem
+        from PyQt5.QtWidgets import QTableWidgetItem
         table = ResourceList()
         table.resize(400, 300)
         table.setColumnCount(1)
@@ -390,7 +391,7 @@ class UITests(unittest.TestCase):
         edge = matrix.columnWidth(0)
         point = QPoint(edge, 12)
         QTest.mousePress(matrix.viewport(), Qt.MouseButton.LeftButton, pos=point)
-        QTest.mouseMove(matrix.viewport(), point + QPoint(24, 0))
+        drag_move(matrix.viewport(), point + QPoint(24, 0))
         QTest.mouseRelease(matrix.viewport(), Qt.MouseButton.LeftButton, pos=point + QPoint(24, 0))
         self.assertEqual(matrix.columnWidth(0), 154)
         self.assertIsNone(matrix._resize_drag)
@@ -421,7 +422,7 @@ class UITests(unittest.TestCase):
         finally:
             release.set()
 
-    def test_matrix_counters_count_only_visible_pods(self):
+    def test_matrix_counters_respect_scope_but_include_hidden_statuses(self):
         window = MainWindow(self.store, self.root)
         self.addCleanup(window.deleteLater)
         self.addCleanup(window.close)
@@ -437,7 +438,8 @@ class UITests(unittest.TestCase):
         self.assertEqual(window.status_filters["Running"].text(), "Running  1")
         window.recent.setChecked(False)
         window.status_filters["Running"].setChecked(False)
-        self.assertEqual(window.summary_label.text(), "0  Total")
+        self.assertEqual(window.summary_label.text(), "1  Total")
+        self.assertEqual(window.status_filters["Running"].text(), "Running  1")
         window.close()
 
     def test_pod_navigation_logs_and_back(self):
@@ -493,7 +495,7 @@ class UITests(unittest.TestCase):
 
     def test_overlay_close_is_void_and_nested_cards_preserve_parent(self):
         import sys
-        from PyQt6.QtWidgets import QMessageBox
+        from PyQt5.QtWidgets import QMessageBox
         window = MainWindow(self.store, self.root)
         self.addCleanup(window.deleteLater)
         window.timer.stop()

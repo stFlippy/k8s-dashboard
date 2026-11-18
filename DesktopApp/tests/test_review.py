@@ -10,9 +10,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 from concurrent.futures import ThreadPoolExecutor
-from PyQt6.QtWidgets import QApplication, QDialog
-from PyQt6.QtCore import QLockFile, QTimer, Qt
-from PyQt6.QtTest import QTest
+from PyQt5.QtWidgets import QApplication, QDialog
+from PyQt5.QtCore import QLockFile, QTimer, Qt
+from PyQt5.QtTest import QTest
 from quaber.storage import UserStore
 from quaber.kubernetes import Kubernetes
 from quaber.authorization import ClusterAuthorization, AuthorizationRequired

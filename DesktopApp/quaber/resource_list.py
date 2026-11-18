@@ -1,7 +1,7 @@
 """Flat resource lists with native row selection and existing cell metadata."""
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QKeySequence, QColor
-from PyQt6.QtWidgets import (QTreeWidget, QTreeWidgetItem, QHeaderView, QAbstractItemView,
+from PyQt5.QtCore import QRect, Qt, pyqtSignal
+from PyQt5.QtGui import QKeySequence, QColor, QPainter
+from PyQt5.QtWidgets import (QTreeWidget, QTreeWidgetItem, QHeaderView, QAbstractItemView,
     QLabel, QStyle, QStyleOptionViewItem, QStyledItemDelegate, QLineEdit, QMenu, QApplication)
 
 
@@ -23,26 +23,29 @@ class ResourceHeader(QHeaderView):
                      and abs(position.x()-(self.sectionViewportPosition(column)+self.sectionSize(column))) <= 4), -1)
 
     def paintSection(self, painter, rect, column):
-        painter.save()
         super().paintSection(painter, rect, column)
-        if self._resizable(column):
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self.viewport())
+        for column in range(self.count()):
+            if self.isSectionHidden(column) or not self._resizable(column):
+                continue
             active = column in (self._edge, self._drag_column)
             color = QColor("#005FB8" if self.palette().base().color().lightness() > 128 else "#65ABFF") if active else self.palette().dark().color()
-            painter.setPen(color)
-            painter.drawLine(rect.right(), rect.top()+6, rect.right(), rect.bottom()-6)
-            if active:
-                painter.drawLine(rect.right()-1, rect.top()+6, rect.right()-1, rect.bottom()-6)
-        painter.restore()
+            width = 2 if active else 1
+            right = self.sectionViewportPosition(column) + self.sectionSize(column) - 1
+            painter.fillRect(QRect(right-width+1, 6, width, max(0, self.height()-12)), color)
 
     def mouseMoveEvent(self, event):
-        edge = self._edge_at(event.position())
+        edge = self._edge_at(event.localPos())
         if edge != self._edge:
             self._edge = edge
             self.viewport().update()
         super().mouseMoveEvent(event)
 
     def mousePressEvent(self, event):
-        self._drag_column = self._edge_at(event.position()) if event.button() == Qt.MouseButton.LeftButton else -1
+        self._drag_column = self._edge_at(event.localPos()) if event.button() == Qt.MouseButton.LeftButton else -1
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event):
@@ -152,7 +155,7 @@ class ResourceList(QTreeWidget):
             action = menu.addAction("Копировать "+label)
             action.triggered.connect(lambda checked=False, column=column: QApplication.clipboard().setText(entry.text(column)))
         try:
-            menu.exec(self.viewport().mapToGlobal(position))
+            menu.exec_(self.viewport().mapToGlobal(position))
         finally:
             menu.deleteLater()
 
@@ -185,13 +188,13 @@ class ResourceList(QTreeWidget):
         self._update_empty()
 
     def mousePressEvent(self, event):
-        if not self.indexAt(event.position().toPoint()).isValid():
+        if not self.indexAt(event.pos()).isValid():
             self.clearSelection()
             self.setCurrentItem(None)
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        hovered = self.itemAt(event.position().toPoint())
+        hovered = self.itemAt(event.pos())
         if hovered is not self._hovered_item:
             self._hovered_item = hovered
             self.viewport().update()

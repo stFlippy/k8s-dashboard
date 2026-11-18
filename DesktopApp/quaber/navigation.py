@@ -1,9 +1,9 @@
 """Small vector navigation icons rendered at the display's pixel density."""
 from functools import lru_cache
-from PyQt6.QtCore import QByteArray, QRectF
-from PyQt6.QtGui import QIcon, QPainter, QPixmap
-from PyQt6.QtSvg import QSvgRenderer
-from PyQt6.QtCore import Qt
+from PyQt5.QtCore import QByteArray, QRectF
+from PyQt5.QtGui import QIcon, QPainter, QPixmap
+from PyQt5.QtSvg import QSvgRenderer
+from PyQt5.QtCore import Qt
 
 PATHS = {
     "workloads": '<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>',

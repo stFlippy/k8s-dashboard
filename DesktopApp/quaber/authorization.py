@@ -25,13 +25,18 @@ class ClusterAuthorization:
             raise AuthorizationRequired("Кластер удалён из настроек.")
         return cluster
 
-    def block(self, identifier):
+    def block(self, identifier, *, shared=False):
         with self._guard:
-            self._blocked[identifier] = self.signature(self.cluster(identifier))
+            cluster = self.cluster(identifier)
+            group = [c for c in self.store.clusters() if c.get("sharedPassword") and c["username"] == cluster["username"]] if shared and cluster.get("sharedPassword") else [cluster]
+            for member in group:
+                self._blocked[member["id"]] = self.signature(member)
 
     def renew(self, identifier, expected_config=None):
+        initial = self.cluster(identifier)
+        lock_key = ("shared", initial["username"]) if initial.get("sharedPassword") else identifier
         with self._guard:
-            lock = self._locks.setdefault(identifier, threading.Lock())
+            lock = self._locks.setdefault(lock_key, threading.Lock())
         with lock:
             cluster = self.cluster(identifier)
             if not cluster.get("enabled"):
@@ -40,6 +45,8 @@ class ClusterAuthorization:
                 return cluster
             if expected_config is None and not self.store.login_required(cluster):
                 return cluster
+            if cluster.get("authMode") == "kubeconfig":
+                raise AuthorizationRequired("Обновите kubeconfig в настройках подключения.")
             signature = self.signature(cluster)
             with self._guard:
                 blocked = self._blocked.get(identifier) == signature
@@ -62,7 +69,8 @@ class ClusterAuthorization:
                 # account. Do not block automatic renewal of that new identity.
                 if self.cluster(identifier) != cluster:
                     raise AuthorizationRequired("Запись кластера изменилась во время входа; старый результат отклонён.") from None
-                self.block(identifier)
                 safe = _login_message(str(exc), password)
+                rejected = any(word in safe.lower() for word in ("unauthorized", "invalid credentials", "invalid password", "incorrect", "rejected", "неверн", "отклонён"))
+                self.block(identifier, shared=rejected)
                 raise AuthorizationRequired(safe) from None
             return self.cluster(identifier)

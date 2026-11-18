@@ -4,8 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
-from PyQt6.QtWidgets import QApplication
-from PyQt6.QtTest import QTest
+from PyQt5.QtWidgets import QApplication
+from PyQt5.QtTest import QTest
 from quaber.storage import UserStore
 from quaber.ui import MainWindow, ResourceDialog
 from quaber.views import MatrixViews, validate_preferences
@@ -32,8 +32,8 @@ class ReportTests(unittest.TestCase):
 
     def test_frozen_deployment_header_and_rows_stay_aligned(self):
         from quaber.widgets import PodMatrix, NamespaceHeader
-        from PyQt6.QtCore import Qt
-        from PyQt6.QtWidgets import QTableWidgetItem
+        from PyQt5.QtCore import Qt
+        from PyQt5.QtWidgets import QTableWidgetItem
         matrix = PodMatrix()
         self.addCleanup(matrix.deleteLater)
         matrix.setHorizontalHeader(NamespaceHeader(Qt.Orientation.Horizontal, matrix))
@@ -101,9 +101,9 @@ class ReportTests(unittest.TestCase):
             before = order()
             window.render_matrix()
             self.assertEqual(before, order())
-            self.assertIsNotNone(window.allpods_page)
-            window._render_resources("pod", [{"metadata": {"name": "database", "uid": "pod", "ownerReferences": [{"controller": True, "kind": "StatefulSet", "name": "db"}]}, "status": {"phase": "Pending"}}], ("c", "ns", "Fixture"))
-            self.assertIn("StatefulSet", window.pod_controls[2].item(0, 3).text())
+            self.assertFalse(hasattr(window, "allpods_page"))
+            self.assertFalse(hasattr(window, "pod_controls"))
+            self.assertFalse(any("Все Pod" == window.tabs.tabText(i) for i in range(window.tabs.count())))
             window.close()
             window._cleanup_thread.join(5)
             window.deleteLater()

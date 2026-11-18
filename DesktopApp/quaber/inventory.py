@@ -6,11 +6,12 @@ import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt5.QtCore import QObject, pyqtSignal
 from .kubernetes import Kubernetes
+from .polling import polling_allowed
 
 APP_LABEL = "app.kubernetes.io/name"
-CSV_FIELDS = ("HOST", "NAMESPACE", "KIND", "NAME", "CONTAINER_IMAGES", "branch", "deployed by", "version")
+CSV_FIELDS = ("HOST", "NAMESPACE", "KIND", "NAME", "CONTAINER_IMAGES", "branch", "deployed by", "version", "REPLICAS")
 
 
 def inventory_record(resource, kind, namespace):
@@ -33,7 +34,8 @@ def inventory_record(resource, kind, namespace):
     return {"namespace": namespace, "kind": kind, "name": metadata.get("name", ""), "labels": labels,
             "images": [container.get("image", "") for key in ("containers", "initContainers") for container in pod_spec.get(key, [])],
             "branch": first("GIT_BRANCH", "vtb.ru/branch"), "deployed_by": first("STARTED_BY", "vtb.ru/started_by"),
-            "version": first("app.kubernetes.io/version")}
+            "version": first("app.kubernetes.io/version"),
+            "replicas": resource.get("status", {}).get("replicas", 0) if kind == "Deployment" else "—"}
 
 
 def collect_inventory(api, cluster):
@@ -89,6 +91,8 @@ class InventoryService(QObject):
         return cached[2] if cached and cached[0] == self.signature(cluster) else None
 
     def refresh(self, ids, *, force=False):
+        if not polling_allowed(self):
+            return
         for cluster in self.clusters():
             cid = cluster["id"]
             if cid not in ids or (cid in self.loading and not force):
@@ -124,9 +128,9 @@ class InventoryService(QObject):
 
 
 def inventory_row(snapshot, record):
-    """The eight export-curl.cmd fields, shared by the Dumps table and CSV."""
+    """Dump fields shared by the table and exports, including observed replicas."""
     return (snapshot["server"], record["namespace"], record["kind"], record["name"],
-            ";".join(record["images"]), record["branch"], record["deployed_by"], record["version"])
+            ";".join(record["images"]), record["branch"], record["deployed_by"], record["version"], record.get("replicas", "—"))
 
 
 def write_inventory(destination, snapshots, *, rows=None, include_log=True):
@@ -146,7 +150,7 @@ def write_inventory(destination, snapshots, *, rows=None, include_log=True):
                 rows = [inventory_row(snapshot, record) for snapshot in snapshots for record in snapshot["records"]]
             for row in rows:
                 if len(row) != len(CSV_FIELDS):
-                    raise ValueError("В строке дампа должно быть восемь полей.")
+                    raise ValueError("Число полей строки не соответствует колонкам дампа.")
                 writer.writerow(row)
         if not include_log:
             os.replace(csv_temp, destination)

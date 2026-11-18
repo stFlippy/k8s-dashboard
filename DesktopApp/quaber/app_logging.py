@@ -5,7 +5,7 @@ import re
 import threading
 import time
 from collections import OrderedDict
-from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt5.QtCore import QObject, pyqtSignal
 
 _lock = threading.Lock()
 _secrets = OrderedDict()

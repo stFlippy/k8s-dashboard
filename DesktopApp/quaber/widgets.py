@@ -2,9 +2,9 @@
 import re
 from pathlib import Path
 from datetime import datetime, timezone
-from PyQt6.QtCore import Qt, QSize, QRect, QRectF, QPointF, QEvent, pyqtSignal
-from PyQt6.QtGui import QColor, QPainter, QPen, QFont, QTextCursor, QFontDatabase
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QLabel,
+from PyQt5.QtCore import Qt, QSize, QRect, QRectF, QPointF, QEvent, pyqtSignal
+from PyQt5.QtGui import QColor, QPainter, QPen, QFont, QTextCursor, QFontDatabase
+from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QLabel,
     QPushButton, QPlainTextEdit, QHeaderView, QStyledItemDelegate, QMenu, QTableWidget, QTableView, QAbstractItemView, QToolTip, QCheckBox, QFrame, QComboBox, QListView, QApplication, QTabWidget)
 
 COLORS = {"Running": "#43B694", "Pending": "#DCAE54", "Failed": "#E56B6E",
@@ -27,7 +27,7 @@ class DisabledHintButton(QPushButton):
     def event(self, event):
         if event.type() == QEvent.Type.MouseButtonPress and not self.isEnabled():
             if self.toolTip():
-                QToolTip.showText(event.globalPosition().toPoint(), self.toolTip(), self)
+                QToolTip.showText(event.globalPos(), self.toolTip(), self)
             return True
         return super().event(event)
 
@@ -38,7 +38,7 @@ class ElidedButton(QPushButton):
         super().__init__(parent)
         self.full_text = text
         self.setMinimumWidth(0)
-        from PyQt6.QtWidgets import QSizePolicy
+        from PyQt5.QtWidgets import QSizePolicy
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.setToolTip(text)
         self.setAccessibleName(text)
@@ -93,7 +93,7 @@ class PodDonut(QWidget):
         font.setBold(True)
         painter.setFont(font)
         painter.setPen(self.palette().text().color())
-        current = self.counts.get("Running", 0) + self.counts.get("Failed", 0) if self.counts is not None else None
+        current = total
         painter.drawText(area.adjusted(0, -12, 0, -12), Qt.AlignmentFlag.AlignCenter, str(current) if current is not None else "—")
         font.setPixelSize(13)
         font.setBold(False)
@@ -142,7 +142,7 @@ class MultiSelectMenu(QMenu):
         self.setObjectName("multiSelectMenu")
 
     def mouseReleaseEvent(self, event):
-        action = self.actionAt(event.position().toPoint())
+        action = self.actionAt(event.pos())
         if event.button() == Qt.MouseButton.LeftButton and action and action.isEnabled() and action.isCheckable():
             action.trigger()
             event.accept()
@@ -193,9 +193,9 @@ def resource_percent(metrics, resource):
 class StatusDelegate(QStyledItemDelegate):
     def paint(self, painter, option, index):
         status = str(index.data() or "Unknown")
-        from PyQt6.QtWidgets import QStyle
+        from PyQt5.QtWidgets import QStyle
         selected = bool(option.state & QStyle.StateFlag.State_Selected)
-        from PyQt6.QtWidgets import QStyleOptionViewItem
+        from PyQt5.QtWidgets import QStyleOptionViewItem
         background_option = QStyleOptionViewItem(option)
         self.initStyleOption(background_option, index)
         background_option.text = ""
@@ -236,8 +236,8 @@ class MatrixHeader(QHeaderView):
         self.setMouseTracking(True)
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton and event.position().y() >= self.height()-4:
-            self._height_drag = (event.globalPosition().y(), self.height())
+        if event.button() == Qt.MouseButton.LeftButton and event.localPos().y() >= self.height()-4:
+            self._height_drag = (event.screenPos().y(), self.height())
             event.accept()
             return
         super().mousePressEvent(event)
@@ -245,12 +245,12 @@ class MatrixHeader(QHeaderView):
     def mouseMoveEvent(self, event):
         if self._height_drag is not None:
             origin, height = self._height_drag
-            height = max(54, min(360, height+round(event.globalPosition().y()-origin)))
+            height = max(54, min(360, height+round(event.screenPos().y()-origin)))
             self.matrix.horizontalHeader().setFixedHeight(height)
             self.matrix.sync_frozen()
             self.matrix.headerHeightChanged.emit(height)
             return
-        if event.position().y() >= self.height()-4:
+        if event.localPos().y() >= self.height()-4:
             self.viewport().setCursor(Qt.CursorShape.SplitVCursor)
         else:
             self.viewport().unsetCursor()
@@ -436,9 +436,9 @@ class PodMatrix(QTableWidget):
 
     def mouseReleaseEvent(self, event):
         super().mouseReleaseEvent(event)
-        index = self.indexAt(event.position().toPoint())
-        if event.button() == Qt.MouseButton.LeftButton and index.isValid() and self.content_rect(self.visualRect(index), index.row()).contains(event.position().toPoint()):
-            self.activatedAt.emit(index.row(), index.column(), event.position().toPoint())
+        index = self.indexAt(event.pos())
+        if event.button() == Qt.MouseButton.LeftButton and index.isValid() and self.content_rect(self.visualRect(index), index.row()).contains(event.pos()):
+            self.activatedAt.emit(index.row(), index.column(), event.pos())
 
     def _set_hover(self, cell, pod=None):
         if cell == self.hovered and pod == self.hovered_pod:
@@ -459,7 +459,7 @@ class PodMatrix(QTableWidget):
             kind = event.type()
             if kind in (QEvent.Type.MouseMove, QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease,
                         QEvent.Type.MouseButtonDblClick, QEvent.Type.ToolTip):
-                local = event.pos() if kind == QEvent.Type.ToolTip else event.position().toPoint()
+                local = event.pos()
                 point = local if watched is self.viewport() else self.viewport().mapFromGlobal(watched.mapToGlobal(local))
                 group = self.group_at(point)
                 if group is not None and not self._resize_drag and not self._row_drag and not self._resize_edge(point):
@@ -470,18 +470,18 @@ class PodMatrix(QTableWidget):
                         QToolTip.showText(event.globalPos(), WORKLOAD_HELP.get(name, name), watched)
                     return True
             if kind in (QEvent.Type.MouseMove, QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease):
-                point = (event.position().toPoint() if watched is self.viewport() else
-                         self.viewport().mapFromGlobal(watched.mapToGlobal(event.position().toPoint())))
+                point = (event.pos() if watched is self.viewport() else
+                         self.viewport().mapFromGlobal(watched.mapToGlobal(event.pos())))
                 edge = self._resize_edge(point)
                 if watched is self.frozen.viewport() and abs(point.x()-self.frozen.width()) <= 3:
                     edge = ("column", 0, self.columnWidth(0))
                 if kind == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton and edge:
-                    self._resize_drag = (*edge, event.globalPosition())
+                    self._resize_drag = (*edge, event.screenPos())
                     return True
                 if self._resize_drag:
                     axis, section, size, origin = self._resize_drag
                     if kind == QEvent.Type.MouseMove:
-                        delta = event.globalPosition() - origin
+                        delta = event.screenPos() - origin
                         if axis == "column":
                             self.setColumnWidth(section, max(100, min(500, size + round(delta.x()))))
                         else:
@@ -491,13 +491,13 @@ class PodMatrix(QTableWidget):
                         self._resize_drag = None
                     return True
                 if watched is self.frozen.viewport():
-                    index = self.frozen.indexAt(event.position().toPoint())
+                    index = self.frozen.indexAt(event.pos())
                     if kind == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton and index.isValid():
-                        if self.content_rect(self.frozen.visualRect(index), index.row()).contains(event.position().toPoint()):
-                            self._row_drag = (index.row(), event.position().toPoint(), False)
+                        if self.content_rect(self.frozen.visualRect(index), index.row()).contains(event.pos()):
+                            self._row_drag = (index.row(), event.pos(), False)
                     if kind == QEvent.Type.MouseMove and self._row_drag and event.buttons() & Qt.MouseButton.LeftButton:
                         row, origin, active = self._row_drag
-                        active = active or (event.position().toPoint()-origin).manhattanLength() >= QApplication.startDragDistance()
+                        active = active or (event.pos()-origin).manhattanLength() >= QApplication.startDragDistance()
                         self._row_drag = (row, origin, active)
                         if active:
                             watched.setCursor(Qt.CursorShape.ClosedHandCursor)
@@ -513,21 +513,21 @@ class PodMatrix(QTableWidget):
                             return True
                 watched.setCursor(Qt.CursorShape.SplitHCursor if edge and edge[0] == "column" else Qt.CursorShape.SplitVCursor if edge else Qt.CursorShape.ArrowCursor)
                 if watched is self.frozen.viewport() and kind == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
-                    index = self.frozen.indexAt(event.position().toPoint())
-                    if index.isValid() and self.content_rect(self.frozen.visualRect(index), index.row()).contains(event.position().toPoint()):
+                    index = self.frozen.indexAt(event.pos())
+                    if index.isValid() and self.content_rect(self.frozen.visualRect(index), index.row()).contains(event.pos()):
                         self.activatedAt.emit(index.row(), 0, None)
                     return True
         if watched is self.frozen.viewport() and event.type() == QEvent.Type.MouseMove:
-            index = self.frozen.indexAt(event.position().toPoint())
+            index = self.frozen.indexAt(event.pos())
             self._set_hover((index.row(), 0) if index.isValid() else (-1, -1))
         elif watched is self.viewport() and event.type() == QEvent.Type.Leave:
             self._set_hover((-1, -1))
         return super().eventFilter(watched, event)
 
     def mouseMoveEvent(self, event):
-        index = self.indexAt(event.position().toPoint())
+        index = self.indexAt(event.pos())
         pods = index.data(Qt.ItemDataRole.UserRole) if index.isValid() else None
-        hit = pod_at(self.content_rect(self.visualRect(index), index.row()), event.position().toPoint(), len(pods)) if isinstance(pods, list) else None
+        hit = pod_at(self.content_rect(self.visualRect(index), index.row()), event.pos(), len(pods)) if isinstance(pods, list) else None
         self._set_hover((index.row(), index.column()) if index.isValid() else (-1, -1), hit)
         super().mouseMoveEvent(event)
 
@@ -594,7 +594,7 @@ def pod_marker_style(pod, deploy_mode=False):
     status = pod_status(pod)
     if pod.get("_stale"):
         return COLORS["Unknown"], False
-    recent = bool(pod.get("_recent")) and not (deploy_mode and status == "Running")
+    recent = bool(pod.get("_recent")) and status == "Running" and not deploy_mode
     return COLORS["Restart"] if recent else COLORS.get(status, COLORS["Unknown"]), recent
 
 
@@ -823,7 +823,7 @@ class CodeEditor(QWidget):
         self.count.setText(f"0/{total}")
 
     def find_match(self, backwards=False):
-        from PyQt6.QtGui import QTextDocument
+        from PyQt5.QtGui import QTextDocument
         flags = QTextDocument.FindFlag.FindBackward if backwards else QTextDocument.FindFlag(0)
         if not self.editor.find(self.search.text(), flags):
             self.editor.moveCursor(QTextCursor.MoveOperation.End if backwards else QTextCursor.MoveOperation.Start)

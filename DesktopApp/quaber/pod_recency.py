@@ -6,7 +6,7 @@ import math
 import time
 from datetime import datetime, timedelta, timezone
 
-from PyQt6.QtCore import QObject, QTimer, pyqtSignal
+from PyQt5.QtCore import QObject, QTimer, pyqtSignal
 
 RECENT_SECONDS = 30 * 60
 DEPLOY_MODE_SECONDS = 30 * 60

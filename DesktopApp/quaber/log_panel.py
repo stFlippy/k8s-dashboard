@@ -1,8 +1,8 @@
-"""Application journal page, independent of cluster terminal output."""
+"""Application journal page, independent of cluster Terminal output."""
 from pathlib import Path
-from PyQt6.QtCore import Qt, QTimer, pyqtSlot
-from PyQt6.QtGui import QTextCursor, QTextDocument
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox,
+from PyQt5.QtCore import Qt, QTimer, pyqtSlot
+from PyQt5.QtGui import QTextCursor, QTextDocument
+from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox,
                             QPlainTextEdit, QApplication, QFileDialog, QMessageBox, QLineEdit)
 from .themes import code_font
 

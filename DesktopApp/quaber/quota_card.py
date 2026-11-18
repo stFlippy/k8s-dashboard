@@ -1,7 +1,7 @@
 """Aligned quota values, with text independent of utilization bars."""
 import math
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QFrame, QGridLayout, QLabel, QProgressBar, QSizePolicy
+from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import QFrame, QGridLayout, QLabel, QProgressBar, QSizePolicy
 from .metrics import memory_bytes
 
 

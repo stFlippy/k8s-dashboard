@@ -11,14 +11,19 @@ def create_snapshot(root):
     root = root.resolve()
     destination = root / "_rollback" / (datetime.now().strftime("%Y%m%d-%H%M%S-%f")+"-code-only")
     destination.mkdir(parents=True)
-    exclude = {"UserData", "venv", ".venv", "_rollback", ".build-windows", "build-artifacts", "__pycache__", ".git", "dist", "build", "Addons"}
+    exclude = {"UserData", "venv", ".venv", "_rollback", ".build-windows", "build-artifacts", "__pycache__", ".git", "dist", "build", "Addons", "offline-deps", "wheelhouse"}
     allowed = {".py", ".md", ".txt", ".ps1", ".svg", ".ico", ".toml", ".lock"}
     excluded = {name.casefold() for name in exclude}
     hashes = {}
     archive = destination / "DesktopApp-code.zip"
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as output:
         for directory, directories, files in os.walk(root, followlinks=False):
-            directories[:] = sorted(name for name in directories if name.casefold() not in excluded and not (Path(directory)/name).is_symlink())
+            directories[:] = sorted(
+                name for name in directories
+                if name.casefold() not in excluded
+                and not name.casefold().startswith((".venv-", ".build-windows-", "build-artifacts-", "wheelhouse-"))
+                and not (Path(directory)/name).is_symlink()
+            )
             for filename in sorted(files):
                 path = Path(directory) / filename
                 relative = path.relative_to(root)

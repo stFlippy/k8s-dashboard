@@ -1,6 +1,6 @@
 """One explicit target and one decision for a resource mutation."""
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QFrame,
+from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QFrame,
                             QLabel, QSizePolicy, QVBoxLayout)
 
 from .themes import write_background
@@ -47,7 +47,7 @@ class ResourceConfirmation(QDialog):
         self.access_status = QLabel()
         self.access_status.setWordWrap(True)
         layout.addWidget(self.access_status)
-        from PyQt6.QtWidgets import QPushButton
+        from PyQt5.QtWidgets import QPushButton
         self.renew = QPushButton("Продлить режим администратора")
         self.renew.clicked.connect(self._renew_access)
         self.renew.setVisible(self._requires_access)
@@ -101,6 +101,6 @@ class ResourceConfirmation(QDialog):
 def confirm_change(parent, title, target, message, details=None):
     dialog = ResourceConfirmation(parent, title, target, message, details)
     try:
-        return dialog.exec() == QDialog.DialogCode.Accepted
+        return dialog.exec_() == QDialog.DialogCode.Accepted
     finally:
         dialog.deleteLater()

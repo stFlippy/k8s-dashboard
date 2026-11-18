@@ -1,7 +1,8 @@
 """Administrator-only local access, bound to the active editable card."""
 import time
-from PyQt6.QtCore import QObject, QTimer
-from PyQt6.QtWidgets import QToolTip
+from PyQt5.QtCore import QObject, QTimer
+from PyQt5.QtWidgets import QToolTip
+from .polling import polling_allowed, mark_poll_timer
 
 
 class AdminAccess(QObject):
@@ -16,6 +17,7 @@ class AdminAccess(QObject):
         self.timer.setInterval(30000)
         self.timer.timeout.connect(self.update)
         self.timer.start()
+        mark_poll_timer(self.timer)
 
     def target(self):
         panel = getattr(self.window, "_resource_panel", None)
@@ -71,6 +73,8 @@ class AdminAccess(QObject):
             self.updating = False
 
     def check(self, cid, *, force=False):
+        if not polling_allowed(self):
+            return
         if self.window._closing or (cid in self.busy and not force):
             return
         try:

@@ -1,7 +1,7 @@
 """Actions capture resource identity before a menu opens, never a mutable row."""
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QAction, QKeySequence
-from PyQt6.QtWidgets import QApplication, QMenu, QMessageBox, QDialog, QVBoxLayout, QLabel, QScrollArea, QWidget, QDialogButtonBox
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QKeySequence
+from PyQt5.QtWidgets import QAction, QApplication, QMenu, QMessageBox, QDialog, QVBoxLayout, QLabel, QScrollArea, QWidget, QDialogButtonBox
 
 from .safety import check_identity
 from .widgets import ElidedButton
@@ -35,7 +35,7 @@ def choose_location(parent, entries):
     layout.addWidget(cancel)
     dialog.resize(460, min(500, 125+44*len(entries)))
     try:
-        return selected[0] if dialog.exec() == QDialog.DialogCode.Accepted and selected else None
+        return selected[0] if dialog.exec_() == QDialog.DialogCode.Accepted and selected else None
     finally:
         dialog.deleteLater()
 
@@ -66,7 +66,7 @@ class ResourceActions:
         tabs = (("Открыть обзор", "Обзор"), ("Открыть YAML", "YAML"))
         if kind == "pod":
             tabs = (("Открыть POD", "Обзор"), ("Логи", "Логи"), ("События", "События"),
-                    ("terminal", "terminal"), ("Открыть YAML", "YAML"))
+                    ("Terminal", "Terminal"), ("Открыть YAML", "YAML"))
         elif kind == "deployment":
             tabs = (("Открыть обзор", "Обзор"), ("Экземпляры (Pods)", "Pods"),
                     ("События", "События"), ("Открыть YAML", "YAML"))
@@ -94,7 +94,7 @@ class ResourceActions:
             return
         menu = self.menu(identity)
         try:
-            menu.exec(position)
+            menu.exec_(position)
         finally:
             menu.deleteLater()
 

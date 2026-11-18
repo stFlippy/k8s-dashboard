@@ -2,10 +2,10 @@
 import copy
 import unittest
 from unittest.mock import patch
-from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt
-from PyQt6.QtGui import QMouseEvent
-from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QLineEdit, QTableWidgetItem
+from PyQt5.QtCore import QEvent, QPoint, QPointF, Qt
+from PyQt5.QtGui import QMouseEvent
+from PyQt5.QtTest import QTest
+from PyQt5.QtWidgets import QApplication, QLineEdit, QTableWidgetItem
 from quaber.resource_list import ResourceList
 from quaber.themes import apply_palette, stylesheet
 from test_ux import ShellFixture
@@ -31,8 +31,8 @@ class CopyAndRefreshTests(ShellFixture, unittest.TestCase):
         self.assertNotIn("new", views.active["selectedDeployments"])
 
     def test_long_matrix_names_have_room_for_bold_wrapped_text_and_filter_order(self):
-        from PyQt6.QtCore import QRect
-        from PyQt6.QtGui import QFontMetrics
+        from PyQt5.QtCore import QRect
+        from PyQt5.QtGui import QFontMetrics
         resource = copy.deepcopy(self.deployment)
         resource["metadata"]["name"] = "kube-controller-manager-k8s-lab-1"
         self.window.snapshot = {"c": {"name": "Lab", "namespaces": {"ns": {"deployments": [resource], "pods": [], "replica_sets": []}}}}
@@ -77,7 +77,7 @@ class CopyAndRefreshTests(ShellFixture, unittest.TestCase):
                 for action in menu.actions():
                     action.trigger()
                     observed.append((action.text(), QApplication.clipboard().text()))
-            with patch("quaber.resource_list.QMenu.exec", new=choose):
+            with patch("quaber.resource_list.QMenu.exec_", new=choose):
                 table._copy_menu(table.visualRect(table.model().index(0, 1)).center())
             dialog.accept()
         with patch("quaber.ui.run_dialog", side_effect=inspect):

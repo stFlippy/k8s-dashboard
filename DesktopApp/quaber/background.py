@@ -1,8 +1,8 @@
 """Bounded GUI task delivery and panel-scoped callback lifecycle."""
 import logging
 import time
-from PyQt6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Qt, pyqtSignal, pyqtSlot
-from PyQt6.QtWidgets import QMessageBox
+from PyQt5.QtCore import QObject, QRunnable, QThreadPool, QTimer, Qt, pyqtSignal, pyqtSlot
+from PyQt5.QtWidgets import QMessageBox
 logger = logging.getLogger("quaber.background")
 
 
@@ -118,7 +118,7 @@ class PanelBackground:
     def submit(self, function, done=None, failed=None, *, key=None, priority=False):
         def guarded(callback):
             def deliver(value):
-                from PyQt6 import sip
+                from PyQt5 import sip
                 if self.active and not sip.isdeleted(self.owner) and callback:
                     callback(value)
             return deliver

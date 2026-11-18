@@ -4,7 +4,7 @@ import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-from PyQt6.QtCore import Qt
+from PyQt5.QtCore import Qt
 from quaber.inventory import APP_LABEL, CSV_FIELDS, compare_versions, inventory_record, namespace_snapshots
 from quaber.inventory_pages import LABEL_COLORS
 from test_dumps_versions_admin import snapshot, deployment
@@ -85,9 +85,9 @@ class NamespacePageTests(ShellFixture, unittest.TestCase):
         source['namespaces'] = ['dev']
         source['records'] = [record for record in source['records'] if record['namespace'] == 'dev']
         page.render()
-        self.assertEqual(page.table.columnCount(), 4)
-        self.assertEqual(page.table.item(0, 1).text(), 'Неполные данные')
-        self.assertEqual(page.table.item(0, 3).text(), 'Нет данных')
+        self.assertEqual(page.table.columnCount(), 3)
+        self.assertEqual(page.table.item(0, 0).data(Qt.ItemDataRole.UserRole), 'Неполные данные')
+        self.assertEqual(page.table.item(0, 2).text(), 'Нет данных')
 
     def test_namespace_picker_and_per_label_colors_in_both_themes(self):
         cluster, source = self.cache()
@@ -98,17 +98,17 @@ class NamespacePageTests(ShellFixture, unittest.TestCase):
         for theme in ('light', 'dark'):
             self.window._select_theme(theme)
             page.render()
-            self.assertEqual(page.table.columnCount(), 4)
-            self.assertEqual(page.table.headerItem().text(2), 'Lab / dev')
-            self.assertEqual(page.table.headerItem().text(3), 'Lab / prod')
-            self.assertEqual(page.table.item(0, 1).text(), 'Различается')
-            from PyQt6.QtGui import QColor
-            colors = page.table.item(0, 2).data(LABEL_COLORS)
+            self.assertEqual(page.table.columnCount(), 3)
+            self.assertEqual(page.table.headerItem().text(1), 'Lab / dev')
+            self.assertEqual(page.table.headerItem().text(2), 'Lab / prod')
+            self.assertEqual(page.table.item(0, 0).data(Qt.ItemDataRole.UserRole), 'Различается')
+            from PyQt5.QtGui import QColor
+            colors = page.table.item(0, 1).data(LABEL_COLORS)
             self.assertGreater(QColor(colors[0]).red(), QColor(colors[0]).green())
             self.assertGreater(QColor(colors[1]).green(), QColor(colors[1]).red())
         page.namespaces.selected = {(cluster['id'], 'dev')}
         page.render()
-        self.assertEqual(page.table.item(0, 1).text(), 'Один namespace')
+        self.assertEqual(page.table.item(0, 0).data(Qt.ItemDataRole.UserRole), 'Один namespace')
 
     def test_export_captures_visible_table_rows_before_save_dialog(self):
         cluster, source = self.cache()
@@ -116,7 +116,7 @@ class NamespacePageTests(ShellFixture, unittest.TestCase):
         self.window.navigate_workspace(self.window.tabs.indexOf(page))
         page.table.item(0, 5).setText('visible-branch')
         page.table.topLevelItem(1).setHidden(True)
-        expected = [page.table.item(0, column).text() for column in range(8)]
+        expected = [page.table.item(0, column).text() for column in range(9)]
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder)/'dump.csv'
             def choose(*args):

@@ -1,7 +1,7 @@
-# Windows x64; Python 3.11; verified local environment including build tooling
-PyQt6==6.12.0
-PyQt6-Qt6==6.12.0
-PyQt6_sip==13.13.0
+# Windows x64; CPython 3.11; PyQt5/Qt runtime and build tooling are exact pins
+PyQt5==5.15.9
+PyQt5-Qt5==5.15.2
+PyQt5-sip==12.18.0
 PyYAML==6.0.3
 altgraph==0.17.5
 cffi==2.1.1

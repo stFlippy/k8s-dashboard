@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-from PyQt6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QCheckBox, QLineEdit
+from PyQt5.QtWidgets import QApplication, QDialog, QDialogButtonBox, QCheckBox, QLineEdit
 from quaber.storage import UserStore
 from quaber.confirmations import ResourceConfirmation
 from quaber.diff_view import DiffView

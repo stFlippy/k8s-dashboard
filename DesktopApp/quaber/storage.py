@@ -54,9 +54,21 @@ def sanitize_kubeconfig(raw: str, server: str) -> str:
         raise ValueError("API server в kubeconfig не совпадает с выбранным кластером.")
     cluster, user = clusters[0], users[0]
     token = user.get("token")
-    if not isinstance(token, str) or not token or len(token) > 100_000:
-        raise ValueError("kubectl login должен вернуть bearer token.")
-    if any(key in cluster for key in ("certificate-authority", "proxy-url")) or any(key in user for key in ("exec", "auth-provider", "client-certificate", "client-key", "client-certificate-data", "client-key-data", "username", "password", "as")):
+    certificate = user.get("client-certificate-data")
+    private_key = user.get("client-key-data")
+    if token is not None and (not isinstance(token, str) or not token or len(token) > 100_000):
+        raise ValueError("Некорректный bearer token.")
+    if not token and not (certificate and private_key):
+        raise ValueError("Kubeconfig должен содержать bearer token или клиентский сертификат с ключом.")
+    for field in (certificate, private_key):
+        if field is not None:
+            if not isinstance(field, str) or len(field) > 100_000:
+                raise ValueError("Некорректный клиентский сертификат или ключ.")
+            try:
+                base64.b64decode(field, validate=True)
+            except Exception as exc:
+                raise ValueError("Некорректный клиентский сертификат или ключ.") from exc
+    if any(key in cluster for key in ("certificate-authority", "proxy-url")) or any(key in user for key in ("exec", "auth-provider", "client-certificate", "client-key", "username", "password", "as")):
         raise ValueError("kubectl login вернул неподдерживаемые поля kubeconfig.")
     ca = cluster.get("certificate-authority-data")
     if ca is not None:
@@ -69,7 +81,7 @@ def sanitize_kubeconfig(raw: str, server: str) -> str:
     safe = {
         "apiVersion": "v1", "kind": "Config", "current-context": "quaber-context",
         "clusters": [{"name": "quaber-cluster", "cluster": {"server": validate_server(server), **({"certificate-authority-data": ca} if ca else {}), **({"insecure-skip-tls-verify": True} if cluster.get("insecure-skip-tls-verify") is True else {})}}],
-        "users": [{"name": "quaber-user", "user": {"token": token}}],
+        "users": [{"name": "quaber-user", "user": {"token": token} if token else {"client-certificate-data": certificate, "client-key-data": private_key}}],
         "contexts": [{"name": "quaber-context", "context": {"cluster": "quaber-cluster", "user": "quaber-user"}}],
     }
     return yaml.safe_dump(safe, allow_unicode=True, sort_keys=False)
@@ -177,30 +189,37 @@ class UserStore:
     def login_required(self, cluster: dict) -> bool:
         try:
             config = yaml.safe_load(self.decrypt(cluster["encryptedKubeconfig"]))
+            if config["users"][0]["user"].get("client-certificate-data"):
+                return False
             token = config["users"][0]["user"]["token"]
             encoded = token.split(".")[1]
             payload = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
             expiry = payload.get("exp")
+            if expiry is None and cluster.get("authMode") == "kubeconfig":
+                return False
             return not isinstance(expiry, (int, float)) or expiry <= datetime.now(timezone.utc).timestamp() + 30
         except Exception:
-            return True
+            return cluster.get("authMode") != "kubeconfig"
 
     def saved_password(self, cluster: dict) -> str:
+        if cluster.get("sharedPassword"):
+            group = [c for c in self.clusters() if c.get("sharedPassword") and c["username"] == cluster["username"] and c.get("encryptedPassword")]
+            cluster = max(group, key=lambda c: c.get("updatedAt", "")) if group else cluster
         encrypted = cluster.get("encryptedPassword")
         return self.decrypt(encrypted) if encrypted else ""
 
     def put_cluster(self, name: str, server: str, username: str, kubeconfig: str | None, enabled: bool = True,
                     cluster_id: str | None = None, *, password: str | None = None,
-                    remember_password: bool | None = None, kubectl_path: str | None = None, expected=None) -> dict:
+                    remember_password: bool | None = None, kubectl_path: str | None = None, expected=None, shared_password=None) -> dict:
         with self._lock:
             if expected is not None:
                 current = next((c for c in self.clusters() if c["id"] == cluster_id), None)
                 if current != expected:
                     raise ValueError("Кластер изменился во время входа. Откройте форму заново.")
             return self._put_cluster(name, server, username, kubeconfig, enabled, cluster_id,
-                                     password, remember_password, kubectl_path)
+                                     password, remember_password, kubectl_path, shared_password)
 
-    def _put_cluster(self, name, server, username, kubeconfig, enabled, cluster_id, password, remember_password, kubectl_path):
+    def _put_cluster(self, name, server, username, kubeconfig, enabled, cluster_id, password, remember_password, kubectl_path, shared_password):
         name, username = name.strip(), username.strip()
         if not name or len(name) > 80 or any(ord(c) < 32 for c in name):
             raise ValueError("Имя кластера должно содержать от 1 до 80 символов без управляющих знаков.")
@@ -221,6 +240,8 @@ class UserStore:
                   "enabled": bool(enabled), "encryptedKubeconfig": self.encrypt(sanitize_kubeconfig(kubeconfig, server)) if kubeconfig else existing["encryptedKubeconfig"],
                   "createdAt": existing["createdAt"] if existing else now(), "updatedAt": now()}
         same_identity = existing and server == existing["server"] and username == existing["username"]
+        record["sharedPassword"] = bool(shared_password if shared_password is not None else (existing or {}).get("sharedPassword", False))
+        record["authMode"] = "login" if password else (existing or {}).get("authMode", "login")
         if remember_password is True:
             if password:
                 if len(password) > 1024:
@@ -237,8 +258,48 @@ class UserStore:
             if not isinstance(client, str) or len(client) > 32767 or "\0" in client:
                 raise ValueError("Некорректный путь к kubectl.")
             record["kubectlPath"] = client.strip()
-        self.save_clusters([record if item["id"] == cluster_id else item for item in clusters] if existing else [*clusters, record])
+        records = [record if item["id"] == cluster_id else item for item in clusters] if existing else [*clusters, record]
+        if record["sharedPassword"] and password and remember_password:
+            for peer in records:
+                if peer.get("sharedPassword") and peer["username"] == username:
+                    peer["encryptedPassword"] = self.encrypt(password)
+                    peer["updatedAt"] = record["updatedAt"]
+        self.save_clusters(records)
         return record
+
+    def set_shared_password(self, identifier, enabled):
+        with self._lock:
+            records = self.clusters()
+            cluster = next(c for c in records if c["id"] == identifier)
+            peers = [c for c in records if c["id"] != identifier and c.get("sharedPassword") and c["username"] == cluster["username"] and c.get("encryptedPassword")]
+            if enabled and peers:
+                cluster["encryptedPassword"] = max(peers, key=lambda c: c.get("updatedAt", ""))["encryptedPassword"]
+            cluster["sharedPassword"] = bool(enabled)
+            cluster["updatedAt"] = now()
+            self.save_clusters(records)
+
+    def import_contexts(self, entries):
+        if not entries or len(entries) > 100:
+            raise ValueError("Выберите от 1 до 100 контекстов.")
+        with self._lock:
+            records = self.clusters()
+            names = {record["name"].casefold() for record in records}
+            imported = []
+            for entry in entries:
+                name = base = entry["name"][:70] or "Кластер"
+                index = 2
+                while name.casefold() in names:
+                    name = f"{base} ({index})"
+                    index += 1
+                names.add(name.casefold())
+                server = validate_server(entry["server"])
+                record = {"id": str(uuid.uuid4()), "name": name, "server": server, "username": entry["username"],
+                          "enabled": True, "authMode": "kubeconfig", "sharedPassword": False,
+                          "encryptedKubeconfig": self.encrypt(sanitize_kubeconfig(entry["kubeconfig"], server)),
+                          "createdAt": now(), "updatedAt": now()}
+                imported.append(record)
+            self.save_clusters(records+imported)
+            return imported
 
     def delete_cluster(self, cluster_id: str) -> None:
         with self._lock:
@@ -271,7 +332,7 @@ class UserStore:
         usernames = {cluster["username"] for cluster in selected}
         if len(usernames) != 1:
             raise ValueError("Для общего входа кластеры должны иметь одного пользователя.")
-        if len({c["server"] for c in selected}) != 1:
+        if len({c["server"] for c in selected}) != 1 and not all(c.get("sharedPassword") for c in selected):
             raise ValueError("Общий вход между разными endpoints запрещён; войдите в каждый отдельно.")
         prepared = {cluster["id"]: self.encrypt(sanitize_kubeconfig(updates[cluster["id"]], cluster["server"])) for cluster in selected}
         timestamp = now()
@@ -284,6 +345,14 @@ class UserStore:
                     raise ValueError("Введите пароль кластера (не более 1024 символов).")
                 cluster["encryptedPassword"] = self.encrypt(password)
             cluster["updatedAt"] = timestamp
+        if password is not None and any(c.get("sharedPassword") for c in selected):
+            for peer in clusters:
+                if peer.get("sharedPassword") and peer["username"] in usernames:
+                    if remember_password is False:
+                        peer.pop("encryptedPassword", None)
+                    else:
+                        peer["encryptedPassword"] = self.encrypt(password)
+                    peer["updatedAt"] = timestamp
         self.save_clusters(clusters)
 
     def audit(self, action: str, cluster_id: str, namespace: str = "", name: str = "", **details) -> None:

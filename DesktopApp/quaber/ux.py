@@ -1,7 +1,7 @@
 """Window actions shared by the toolbar, keyboard and mouse navigation."""
-from PyQt6.QtCore import QObject, QEvent, Qt, QTimer
-from PyQt6.QtGui import QAction, QKeySequence
-from PyQt6.QtWidgets import QApplication, QWidget, QPushButton, QMessageBox, QVBoxLayout, QCheckBox
+from PyQt5.QtCore import QObject, QEvent, Qt, QTimer
+from PyQt5.QtGui import QKeySequence
+from PyQt5.QtWidgets import QAction, QApplication, QWidget, QPushButton, QMessageBox, QVBoxLayout, QCheckBox
 from .widgets import DisabledHintButton
 
 
@@ -69,7 +69,7 @@ class ShellActions(QObject):
         self.window.refresh_write_controls()
 
     def mode_tooltip(self):
-        return ("Включить режим администратора: одно изменение или одна минута terminal. Потребуется пример; права определяет Kubernetes."
+        return ("Включить режим администратора: одно изменение или одна минута Terminal. Потребуется пример; права определяет Kubernetes."
                 if self.window.preferences.get("read_only", True) else
                 "Выключить режим администратора и отменить неотправленные изменения. Запущенные операции продолжаются.")
 

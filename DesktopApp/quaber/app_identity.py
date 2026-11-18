@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
-from PyQt6.QtGui import QIcon
+from PyQt5.QtGui import QIcon
 
 APP_ID = "quaber"
 PUBLIC = Path(__file__).resolve().parent.parent / "public"

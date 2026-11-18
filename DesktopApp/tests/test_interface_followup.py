@@ -5,9 +5,9 @@ import time
 import unittest
 from contextlib import nullcontext
 from unittest.mock import Mock, patch
-from PyQt6.QtCore import QPoint, Qt, QTimer
-from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QAbstractItemView, QLineEdit
+from PyQt5.QtCore import QPoint, Qt, QTimer
+from PyQt5.QtTest import QTest
+from PyQt5.QtWidgets import QApplication, QAbstractItemView, QLineEdit
 from test_ux import ShellFixture, Deferred
 
 
@@ -130,7 +130,7 @@ class InterfaceFollowupTests(ShellFixture, unittest.TestCase):
         self.api.store.operation.side_effect = lambda *args, **kwargs: nullcontext()
         self.api.proxy.execute.return_value = ("checked", "")
         with patch.object(self.window.store, "clusters", return_value=[{"id": "c", "name": "Production", "enabled": True}]):
-            self.window.open_resource("c", "pod", "ns", "app-pod", "terminal")
+            self.window.open_resource("c", "pod", "ns", "app-pod", "Terminal")
             self.wait()
             old = self.window._resource_panel
             self.window.set_read_only(False)

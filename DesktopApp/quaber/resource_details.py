@@ -1,6 +1,6 @@
 """Live resource details that keep copied text and scroll position stable."""
-from PyQt6.QtCore import QTimer
-from PyQt6.QtWidgets import QTextBrowser
+from PyQt5.QtCore import QTimer
+from PyQt5.QtWidgets import QTextBrowser
 
 
 class ResourceDetails(QTextBrowser):

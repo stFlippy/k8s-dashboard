@@ -2,15 +2,16 @@
 import copy
 import unittest
 from unittest.mock import Mock, patch
-from PyQt6.QtCore import QPoint, Qt
-from PyQt6.QtGui import QColor
-from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QLabel, QHeaderView
+from PyQt5.QtCore import QPoint, Qt
+from PyQt5.QtGui import QColor
+from PyQt5.QtTest import QTest
+from PyQt5.QtWidgets import QLabel, QHeaderView
 
 from quaber.quota_card import QuotaCard
 from quaber.themes import write_background
 from quaber.widgets import MultiSelectMenu
 from test_ux import ShellFixture, Deferred
+from qt_helpers import drag_move
 
 
 class LayoutFollowupTests(ShellFixture, unittest.TestCase):
@@ -34,7 +35,7 @@ class LayoutFollowupTests(ShellFixture, unittest.TestCase):
         self.assertIsNone(matrix._resize_edge(edge))
         with patch.object(self.window, "open_resource"):
             QTest.mousePress(matrix.viewport(), Qt.MouseButton.LeftButton, pos=edge)
-            QTest.mouseMove(matrix.viewport(), edge+QPoint(30, 15))
+            drag_move(matrix.viewport(), edge+QPoint(30, 15))
             QTest.mouseRelease(matrix.viewport(), Qt.MouseButton.LeftButton, pos=edge+QPoint(30, 15))
         self.assertEqual(widths, [matrix.columnWidth(i) for i in range(matrix.columnCount())])
         self.assertEqual(heights, [matrix.rowHeight(i) for i in range(matrix.rowCount())])
@@ -46,7 +47,7 @@ class LayoutFollowupTests(ShellFixture, unittest.TestCase):
         width = matrix.columnWidth(0)
         point = QPoint(width-1, matrix.GROUP_HEIGHT+12)
         QTest.mousePress(matrix.viewport(), Qt.MouseButton.LeftButton, pos=point)
-        QTest.mouseMove(matrix.viewport(), point+QPoint(30, 0))
+        drag_move(matrix.viewport(), point+QPoint(30, 0))
         QTest.mouseRelease(matrix.viewport(), Qt.MouseButton.LeftButton, pos=point+QPoint(30, 0))
         self.assertEqual(matrix.columnWidth(0), width+30)
         self.assertEqual(self.window.preferences["deployment_width"], width+30)
@@ -54,7 +55,7 @@ class LayoutFollowupTests(ShellFixture, unittest.TestCase):
         height = header.height()
         point = QPoint(matrix.columnWidth(0)+20, height-2)
         QTest.mousePress(header.viewport(), Qt.MouseButton.LeftButton, pos=point)
-        QTest.mouseMove(header.viewport(), point+QPoint(0, 24))
+        drag_move(header.viewport(), point+QPoint(0, 24))
         QTest.mouseRelease(header.viewport(), Qt.MouseButton.LeftButton, pos=point+QPoint(0, 24))
         self.assertEqual(header.height(), height+24)
         self.assertEqual(self.window.preferences["header_height"], height+24)
@@ -64,7 +65,8 @@ class LayoutFollowupTests(ShellFixture, unittest.TestCase):
         panel = self.open_panel("deployment")
         self.window.resize(1600, 900)
         self.app.processEvents()
-        boxes = (panel.nav_cluster, panel.nav_namespace, panel.nav_deployment, panel.nav_pod)
+        boxes = (panel.nav_cluster, panel.nav_namespace, panel.nav_deployment)
+        self.assertTrue(panel.nav_pod.isHidden())
         widths = [box.width() for box in boxes]
         self.assertLessEqual(max(widths)-min(widths), 1)
         self.assertGreater(widths[0], 280)
@@ -165,7 +167,7 @@ class LayoutFollowupTests(ShellFixture, unittest.TestCase):
         self.assertEqual(title.text(), "quota: Production / orders")
         self.assertIn("namespace-quota", title.toolTip())
         self.assertIsNone(quota.findChild(QLabel, "quotaContext"))
-        self.assertEqual(self.window.quota_content.findChild(QLabel, "sectionTitle").text(), "Квоты ресурсов · использовано / лимит")
+        self.assertEqual(self.window.quotas_page.findChild(QLabel, "sectionTitle").text(), "Квоты ресурсов · использовано / лимит")
 
 
 class ReplicaBatchTests(ShellFixture, unittest.TestCase):

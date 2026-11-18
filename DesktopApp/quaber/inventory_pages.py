@@ -1,13 +1,16 @@
 """Cluster dump records and label-based microservice version comparison."""
 from datetime import datetime
 from pathlib import Path
-from PyQt6.QtCore import Qt, pyqtSignal, QPointF
-from PyQt6.QtGui import QColor
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFileDialog, QMessageBox,
+from PyQt5.QtCore import Qt, pyqtSignal, QPointF
+from PyQt5.QtGui import QColor
+from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFileDialog, QMessageBox,
                             QTableWidgetItem, QStyledItemDelegate, QStyleOptionViewItem, QStyle)
+from PyQt5.QtWidgets import QMenu
 from .widgets import MultiSelectMenu
 from .resource_list import ResourceList
-from .inventory import APP_LABEL, CSV_FIELDS, inventory_row, namespace_snapshots, compare_versions, write_inventory
+from .inventory import APP_LABEL, CSV_FIELDS, inventory_row, namespace_snapshots, compare_versions
+from .dump_export import export_dump
+from .wrapped_cells import WrappedCells
 
 
 COMPARISON_DETAILS = {
@@ -17,7 +20,7 @@ COMPARISON_DETAILS = {
     "Нет меток версий": "В ресурсах нет меток для сверки, либо хотя бы одна из выбранных меток отсутствует или пуста.",
     "Один namespace": "Для сравнения выберите минимум два namespace одного или разных кластеров.",
     "Неполные данные": "Чтение ещё не завершено или часть данных недоступна из-за ошибки. Результат сверки пока не определён.",
-    "Выберите метки": "Выберите в списке «Метки версий» метки, значения которых нужно сравнить.",
+    "Выберите метки": "Выберите в списке «Labels» метки, значения которых нужно сравнить.",
 }
 
 
@@ -99,7 +102,7 @@ class NamespacePicker(QPushButton):
                 apply(selected)
             action.triggered.connect(toggle)
         try:
-            menu.exec(self.mapToGlobal(self.rect().bottomLeft()))
+            menu.exec_(self.mapToGlobal(self.rect().bottomLeft()))
         finally:
             menu.deleteLater()
 
@@ -110,16 +113,17 @@ class ClusterPicker(QPushButton):
     def __init__(self, service, parent=None):
         super().__init__(parent)
         self.service = service
+        self.available_clusters = service if callable(service) else service.clusters
         self.selected = None
         self.clicked.connect(self.open_menu)
         self.update_text()
 
     def ids(self, clusters=None):
-        available = {cluster["id"] for cluster in (self.service.clusters() if clusters is None else clusters)}
+        available = {cluster["id"] for cluster in (self.available_clusters() if clusters is None else clusters)}
         return available if self.selected is None else self.selected & available
 
     def update_text(self):
-        clusters = self.service.clusters()
+        clusters = self.available_clusters()
         ids = self.ids(clusters)
         self.setText("Кластеры: Все ▾" if self.selected is None else f"Кластеры: {len(ids)} ▾")
         self.setToolTip("\n".join(cluster["name"] for cluster in clusters if cluster["id"] in ids) or "Выберите кластеры")
@@ -141,7 +145,7 @@ class ClusterPicker(QPushButton):
             sync()
         all_action.triggered.connect(all_changed)
         menu.addSeparator()
-        for cluster in self.service.clusters():
+        for cluster in self.available_clusters():
             cid = cluster["id"]
             action = menu.addAction(cluster["name"])
             action.setCheckable(True)
@@ -154,7 +158,7 @@ class ClusterPicker(QPushButton):
                 sync()
             action.triggered.connect(toggle)
         try:
-            menu.exec(self.mapToGlobal(self.rect().bottomLeft()))
+            menu.exec_(self.mapToGlobal(self.rect().bottomLeft()))
         finally:
             menu.deleteLater()
 
@@ -212,14 +216,20 @@ class DumpsPage(InventoryPage):
         self.exporting = False
         self.controls.addStretch()
         self.export_button = QPushButton("Экспортировать дамп")
-        self.export_button.setToolTip("Сохранить отображаемые строки таблицы в CSV: хост, namespace, тип, имя, образы, ветка, автор и версия.")
-        self.export_button.clicked.connect(self.export)
+        export_menu = QMenu(self.export_button)
+        for format_name in ("CSV", "XLSX"):
+            export_menu.addAction(format_name, lambda checked=False, format_name=format_name: self.export(format_name.lower()))
+        self.export_button.setMenu(export_menu)
+        self.export_button.setToolTip("Сохранить отображаемые строки таблицы в CSV или XLSX: хост, namespace, тип, имя, образы, ветка, автор, версия и реплики.")
         self.controls.addWidget(self.export_button)
         self.table.setColumnCount(len(CSV_FIELDS))
-        self.table.setHorizontalHeaderLabels(["Хост", "Namespace", "Тип", "Имя", "Образы контейнеров", "Ветка", "Кем задеплоен", "Версия"])
+        self.table.setHorizontalHeaderLabels(["Хост", "Namespace", "Тип", "Имя", "Образы контейнеров", "Ветка", "Кем задеплоен", "Версия", "Реплики"])
         for column, key in enumerate(CSV_FIELDS):
             self.table.headerItem().setToolTip(column, key)
         self.table.setWordWrap(True)
+        self.table.setItemDelegate(WrappedCells(self.table))
+        self.table.setUniformRowHeights(True)
+        self.table.header().sectionResized.connect(lambda *_: self.table.viewport().update())
         self.table.set_empty_text("Выберите кластеры для чтения снимка.")
         self.render()
 
@@ -231,7 +241,7 @@ class DumpsPage(InventoryPage):
         self.table.setRowCount(len(records))
         for row, (snapshot, record) in enumerate(records):
             for column, value in enumerate(inventory_row(snapshot, record)):
-                self.table.setItem(row, column, cell(value, snapshot["cluster_name"] if column == 0 else str(value)))
+                self.table.setItem(row, column, cell(value, snapshot["cluster_name"] + "\n" + str(value) if column == 0 else str(value)))
         errors = sum(len(snapshot["errors"]) for snapshot in snapshots)
         self.status.setText("Выберите кластеры." if not selected else "Чтение снимков…" if waiting else
                             f"Кластеров: {len(snapshots)} · ресурсов: {len(records)}" + (f" · ошибок: {errors}. Экспорт будет частичным; подробности в подсказке." if errors else ""))
@@ -246,21 +256,20 @@ class DumpsPage(InventoryPage):
                                       any(snapshot["namespace_count"] is not None for snapshot in snapshots))
         self.table.resizeColumnsToContents()
 
-    def export(self):
+    def export(self, format_name="csv"):
         if not self.export_button.isEnabled():
             return
         rows = tuple(tuple(self.table.item(row, column).text() for column in range(self.table.columnCount()))
                      for row in range(self.table.rowCount()) if not self.table.topLevelItem(row).isHidden())
-        name, _ = QFileDialog.getSaveFileName(self, "Экспортировать таблицу Dumps", f"cluster-dump-{datetime.now():%Y-%m-%d_%H-%M-%S}.csv", "CSV (*.csv)")
+        name, _ = QFileDialog.getSaveFileName(self, "Экспортировать таблицу Dumps", f"cluster-dump-{datetime.now():%Y-%m-%d_%H-%M-%S}.{format_name}", f"{format_name.upper()} (*.{format_name})")
         if not name:
             return
         destination = Path(name)
-        if destination.suffix.lower() != ".csv":
-            destination = Path(str(destination)+".csv")
+        if destination.suffix.lower() != "."+format_name:
+            destination = Path(str(destination)+"."+format_name)
             if destination.exists() and QMessageBox.question(self, "Заменить файл?", str(destination),
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel, QMessageBox.StandardButton.Cancel) != QMessageBox.StandardButton.Yes:
                 return
-        snapshots = tuple(self.snapshots())
         self.exporting = True
         self.clusters.setEnabled(False)
         self.refresh_button.setEnabled(False)
@@ -277,7 +286,7 @@ class DumpsPage(InventoryPage):
             self.refresh_button.setEnabled(True)
             self.render()
             QMessageBox.warning(self, "Не удалось экспортировать дамп", message)
-        if self.window.background.submit(lambda: write_inventory(destination, snapshots, rows=rows, include_log=False), done, failed) is False:
+        if self.window.background.submit(lambda: export_dump(destination, rows), done, failed) is False:
             failed("Не удалось начать экспорт.")
 
 
@@ -289,7 +298,7 @@ class VersionsPage(InventoryPage):
         self.namespaces = NamespacePicker()
         self.namespaces.changed.connect(self.render)
         self.controls.addWidget(self.namespaces)
-        self.labels_button = QPushButton("Метки версий ▾")
+        self.labels_button = QPushButton("Labels ▾")
         self.labels_button.clicked.connect(self.choose_labels)
         self.controls.addWidget(self.labels_button)
         self.controls.addStretch()
@@ -297,6 +306,8 @@ class VersionsPage(InventoryPage):
         self.different_legend = QLabel("● Различается / отсутствует")
         self.controls.addWidget(self.match_legend)
         self.controls.addWidget(self.different_legend)
+        self.controls.removeWidget(self.refresh_button)
+        self.controls.addWidget(self.refresh_button)
         self.table.setWordWrap(True)
         self.table.setItemDelegate(LabelComparisonDelegate(self.table))
         self.table.set_empty_text("Микросервисы сопоставляются по app.kubernetes.io/name.")
@@ -318,7 +329,7 @@ class VersionsPage(InventoryPage):
         if not self.available_labels:
             menu.addAction("Нет меток для сверки").setEnabled(False)
         try:
-            menu.exec(self.labels_button.mapToGlobal(self.labels_button.rect().bottomLeft()))
+            menu.exec_(self.labels_button.mapToGlobal(self.labels_button.rect().bottomLeft()))
         finally:
             menu.deleteLater()
 
@@ -343,23 +354,23 @@ class VersionsPage(InventoryPage):
         if self.label_keys is None and self.available_labels:
             self.label_keys = next(([key] for key in ("app.kubernetes.io/version", "version", "GIT_BRANCH", "vtb.ru/branch") if key in self.available_labels), [])
         keys = self.label_keys or []
-        self.labels_button.setText(f"Метки версий: {len(keys)} ▾")
+        self.labels_button.setText(f"Labels: {len(keys)} ▾")
         self.labels_button.setToolTip("\n".join(keys) or ("Выберите метки, значения которых нужно сравнить между namespace."
                                                        if self.available_labels else "Нет меток версий в полученных ресурсах."))
         rows, skipped = compare_versions(scopes, keys)
         colors = comparison_colors(self.window.preferences.get("theme") == "light")
         self.match_legend.setStyleSheet(f"color:{colors['match']};")
         self.different_legend.setStyleSheet(f"color:{colors['different']};")
-        self.table.setColumnCount(len(scopes)+2)
-        self.table.setHorizontalHeaderLabels(["Микросервис", "Состояние"]+[scope["scope_name"] for scope in scopes])
-        self.table.headerItem().setToolTip(1, "Результат сверки выбранных меток между namespace. Наведите на состояние для пояснения.")
+        self.table.setColumnCount(len(scopes)+1)
+        self.table.setHorizontalHeaderLabels(["Микросервис"]+[scope["scope_name"] for scope in scopes])
         self.table.setRowCount(len(rows))
         for row, data in enumerate(rows):
             self.table.setItem(row, 0, cell(data["service"], f"{APP_LABEL}={data['service']}"))
             state = "Неполные данные" if waiting or unresolved else "Нет меток версий" if not keys and not self.available_labels else data["status"]
-            status = cell(state, COMPARISON_DETAILS[state])
-            self.table.setItem(row, 1, status)
-            for column, scope in enumerate(scopes, 2):
+            service = self.table.item(row, 0)
+            service.setToolTip(str(service.data(Qt.ItemDataRole.ToolTipRole) or "") + "\n" + state + ": " + COMPARISON_DETAILS[state])
+            service.setData(Qt.ItemDataRole.UserRole, state)
+            for column, scope in enumerate(scopes, 1):
                 text, detail = data["cells"][scope["scope_id"]]
                 self.table.setItem(row, column, cell(text, detail))
             tone = "match" if state == "Совпадает" else "different" if state in ("Различается", "Отсутствует") else None
@@ -370,7 +381,7 @@ class VersionsPage(InventoryPage):
             if not waiting and not unresolved:
                 line_colors = [colors["match"] if data["label_statuses"][key] == "Совпадает" else
                                colors["different"] if data["label_statuses"][key] in ("Различается", "Отсутствует") else "" for key in keys]
-                for column in range(2, self.table.columnCount()):
+                for column in range(1, self.table.columnCount()):
                     if self.table.item(row, column).text() not in ("Отсутствует", "Нет данных"):
                         self.table.item(row, column).setData(LABEL_COLORS, line_colors)
         different = sum(data["status"] in ("Различается", "Отсутствует") for data in rows)

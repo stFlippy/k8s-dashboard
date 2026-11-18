@@ -6,8 +6,20 @@ https://github.com/microsoft/vscode/blob/main/src/vs/workbench/browser/media/sty
 """
 import sys
 from pathlib import Path
-from PyQt6.QtCore import QTranslator
-from PyQt6.QtGui import QColor, QFont, QFontDatabase, QPalette
+from PyQt5.QtCore import QTranslator
+from PyQt5.QtGui import QColor, QFont, QFontDatabase, QPalette
+from PyQt5.QtWidgets import QProxyStyle, QStyle
+
+
+class ApplicationStyle(QProxyStyle):
+    """Keep standard dialog actions as text on every desktop theme."""
+    def __init__(self):
+        super().__init__("Fusion")
+
+    def styleHint(self, hint, option=None, widget=None, returnData=None):
+        if hint == QStyle.StyleHint.SH_DialogButtonBox_ButtonsHaveIcons:
+            return 0
+        return super().styleHint(hint, option, widget, returnData)
 
 
 class ButtonTranslations(QTranslator):
@@ -19,6 +31,11 @@ class ButtonTranslations(QTranslator):
             return {"Yes": "Да", "Cancel": "Отмена", "No": "Нет", "OK": "ОК", "Save": "Сохранить",
                     "Discard": "Отбросить", "Close": "Закрыть", "Apply": "Применить"}.get(source.replace("&", ""))
         return None  # Qt requires a null translation to continue looking up unknown text.
+
+
+def font_families():
+    """Read the application font database after QApplication is available."""
+    return QFontDatabase().families()
 
 
 def install_button_translations(app):
@@ -49,7 +66,7 @@ def write_background(light=False):
 
 def load_fonts():
     global _bundled_fonts_loaded
-    if not QFontDatabase.families() and sys.platform == "win32":
+    if not font_families() and sys.platform == "win32":
         for name in ("segoeui.ttf", "seguisym.ttf", "seguiemj.ttf", "consola.ttf"):
             path = Path("C:/Windows/Fonts") / name
             if path.exists():
@@ -63,7 +80,7 @@ def load_fonts():
 
 def ui_family():
     load_fonts()
-    families = QFontDatabase.families()
+    families = font_families()
     if sys.platform == "win32":
         return "Segoe WPC" if "Segoe WPC" in families else "Segoe UI"
     return QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont).family()
@@ -102,7 +119,7 @@ def stylesheet(light=False):
     write_hover = "#921A39" if light else "#C62A41"
     asset_dir = (Path(__file__).resolve().parent.parent / "assets").as_posix()
     monospace = code_font().family()
-    brand_family = "Roboto" if "Roboto" in QFontDatabase.families() else ui_family()
+    brand_family = "Roboto" if "Roboto" in font_families() else ui_family()
     return f"""
     QWidget {{ background:{c['editor']}; color:{c['foreground']}; font-family:'{ui_family()}'; font-size:13px; }}
     QLabel {{ background:transparent; }}

@@ -17,25 +17,26 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
-from PyQt6.QtCore import QObject, QPointF, QRect, QSize, QRunnable, QThreadPool, QTimer, Qt, QEvent, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QColor, QPainter, QPen, QPixmap, QPolygonF, QKeySequence, QAction, QIcon, QFontMetrics
-from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QDialog,
+from PyQt5.QtCore import QObject, QPointF, QRect, QSize, QRunnable, QThreadPool, QTimer, Qt, QEvent, pyqtSignal, pyqtSlot
+from PyQt5.QtGui import QColor, QPainter, QPen, QPixmap, QPolygonF, QKeySequence, QIcon, QFontMetrics
+from PyQt5.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QDialog,
     QDialogButtonBox, QFileDialog, QFormLayout, QGridLayout, QHBoxLayout, QInputDialog, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPushButton, QSpinBox, QSplitter, QTabBar, QTabWidget,
-    QTableWidgetItem, QSizePolicy, QToolTip, QTextEdit, QVBoxLayout, QWidget, QScrollArea, QTextBrowser, QFrame)
+    QTableWidgetItem, QSizePolicy, QToolTip, QTextEdit, QVBoxLayout, QWidget, QScrollArea, QTextBrowser, QFrame, QAction)
 
 from .kubectl import ProxyManager, locate_kubectl, login, test_connection
 from .kubernetes import Kubernetes, ResourceNotFoundError
 from .storage import UserStore, validate_server
 from .views import MatrixViews
 from .widgets import FullCheckBox, AppComboBox as QComboBox, CodeEditor, NamespaceHeader, PodDelegate, PodMatrix, stylesheet, pod_status, pod_at, resource_age, resource_percent, StatusDelegate, DisabledHintButton, PodDonut
-from PyQt6.QtWidgets import QMenu, QButtonGroup, QToolButton
+from PyQt5.QtWidgets import QMenu, QButtonGroup, QToolButton
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .app_logging import LogSession, register_secret
 from .log_panel import LogPanel
 from .resource_list import ResourceList
 from .resource_details import ResourceDetails
 from .app_identity import application_icon
+from .polling import PollingState, polling_allowed, mark_poll_timer
 from .quota_card import QuotaCard
 from .view_tabs import ViewTabs, VIEW_COLORS, blended_color, color_icon
 from .themes import theme as theme_colors, apply_palette, install_button_translations
@@ -54,8 +55,8 @@ from .inventory_pages import DumpsPage, VersionsPage
 from .preferences import PreferenceWriter
 from .background import Background, PanelBackground
 from .resource_index import index_scope, empty_workload, WORKLOAD_ORDER, OPTIONAL_LISTS
-from PyQt6.QtWidgets import QPlainTextEdit
-from PyQt6.QtGui import QTextCursor
+from PyQt5.QtWidgets import QPlainTextEdit
+from PyQt5.QtGui import QTextCursor
 
 logger = logging.getLogger("quaber.ui")
 
@@ -63,7 +64,7 @@ logger = logging.getLogger("quaber.ui")
 def run_dialog(dialog):
     """Dispose temporary modal widgets after their caller has read the result."""
     try:
-        return dialog.exec()
+        return dialog.exec_()
     finally:
         dialog.deleteLater()
 
@@ -128,6 +129,9 @@ class ClusterDialog(QDialog):
         self.password.setEchoMode(QLineEdit.EchoMode.Password)
         self.remember_password = QCheckBox("Сохранить пароль")
         self.remember_password.setChecked(bool(cluster and cluster.get("encryptedPassword")))
+        self.shared_password = QCheckBox("Использовать один пароль для этого логина в отмеченных кластерах")
+        self.shared_password.setChecked(bool(cluster and cluster.get("sharedPassword")))
+        self.shared_password.toggled.connect(lambda checked: self.remember_password.setChecked(True) if checked else None)
         password_error = ""
         if cluster:
             try:
@@ -148,6 +152,7 @@ class ClusterDialog(QDialog):
         form.addRow("Пользователь", self.username)
         form.addRow("Пароль", self.password)
         form.addRow("", self.remember_password)
+        form.addRow("", self.shared_password)
         form.addRow("", self.enabled)
         self.form_widget = QWidget()
         self.form_widget.setLayout(form)
@@ -193,6 +198,7 @@ class ClusterDialog(QDialog):
         existing = self.cluster
         enabled = self.enabled.isChecked()
         remember_password = self.remember_password.isChecked()
+        shared_password = self.shared_password.isChecked()
         try:
             server = validate_server(server.strip())
             try:
@@ -222,7 +228,7 @@ class ClusterDialog(QDialog):
             config = login(executable, server.strip(), username.strip(), password) if password else None
             if save:
                 record = self.store.put_cluster(name, server, username, config, enabled, existing["id"] if existing else None,
-                                               password=password, remember_password=remember_password, expected=existing)
+                                               password=password, remember_password=remember_password, expected=existing, shared_password=shared_password)
                 return record
             if config:
                 count = test_connection(executable, self.store, server.strip(), config)
@@ -296,7 +302,7 @@ class LoginGroupsDialog(QDialog):
             fields.addWidget(password)
             self.passwords.append(password)
             remember = QCheckBox("Сохранить пароль")
-            remember.setChecked(all(bool(c.get("encryptedPassword")) for c in group["clusters"]))
+            remember.setChecked(any(c.get("sharedPassword") for c in group["clusters"]) or all(bool(c.get("encryptedPassword")) for c in group["clusters"]))
             fields.addWidget(remember)
             self.remember_passwords.append(remember)
         fields.setAlignment(Qt.AlignmentFlag.AlignTop)
@@ -424,7 +430,7 @@ class MetricChart(QWidget):
 
     def mouseMoveEvent(self, event):
         left, right, top, bottom = 64, self.width() - 16, 34, self.height() - 24
-        point = event.position()
+        point = event.localPos()
         nearest = min((index for index, value in enumerate(self.values) if value is not None),
                       key=lambda index: abs(self.sample_x(index)-point.x()), default=None)
         if nearest is not None and right > left and left <= point.x() <= right and top <= point.y() <= bottom:
@@ -432,7 +438,7 @@ class MetricChart(QWidget):
             value = self.values[self.hover_index]
             stamp = self.timestamps[self.hover_index].strftime("%H:%M:%S") if self.hover_index < len(self.timestamps) else f"#{self.hover_index+1}"
             text = f"{stamp}  {value:.2f} {self.unit}" if value is not None else f"{stamp}  No data"
-            QToolTip.showText(event.globalPosition().toPoint(), text, self)
+            QToolTip.showText(event.globalPos(), text, self)
         else:
             self.hover_index = None
             QToolTip.hideText()
@@ -547,6 +553,7 @@ class MetricsWidget(QWidget):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.load)
         self.timer.start(5000)
+        mark_poll_timer(self.timer)
         QTimer.singleShot(0, self.load)
 
     def showEvent(self, event):
@@ -554,7 +561,7 @@ class MetricsWidget(QWidget):
         QTimer.singleShot(0, self.load)
 
     def load(self):
-        if self.loading or not self.isVisible():
+        if self.loading or not self.isVisible() or not polling_allowed(self):
             return
         self.loading = True
         self.refresh_period.setText(f"Автообновление: {self.timer.interval()/1000:g} сек")
@@ -783,7 +790,7 @@ class ResourceDialog(QDialog):
         self.tabs.addTab(self.yaml_editor, "YAML")
         if kind == "pod":
             self._pod_tabs()
-            for label in ("Обзор", "Логи", "terminal", "YAML", "Метрики", "События", "Контейнеры"):
+            for label in ("Обзор", "Логи", "Terminal", "YAML", "Метрики", "События", "Контейнеры"):
                 index = next(i for i in range(self.tabs.count()) if self.tabs.tabText(i) == label)
                 widget = self.tabs.widget(index)
                 self.tabs.removeTab(index)
@@ -797,6 +804,7 @@ class ResourceDialog(QDialog):
             self.live_timer.setInterval(5000)
             self.live_timer.timeout.connect(lambda: self.refresh_object(notify_errors=False) if self.isVisible() else None)
             self.live_timer.start()
+            mark_poll_timer(self.live_timer)
         controls = QHBoxLayout()
         save = DisabledHintButton("Сохранить YAML")
         self.yaml_save = save
@@ -866,6 +874,10 @@ class ResourceDialog(QDialog):
         grid.setContentsMargins(18, 4, 18, 8)
         grid.setHorizontalSpacing(12)
         for column, (label, combo) in enumerate((("Кластер", self.nav_cluster), ("Namespace", self.nav_namespace), ("Deployment", self.nav_deployment), ("Pod", self.nav_pod))):
+            if label == "Pod" and self.kind == "deployment":
+                combo.setParent(bar)
+                combo.hide()
+                continue
             grid.addWidget(QLabel(label), 0, column)
             combo.setMinimumWidth(80)
             combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -938,6 +950,8 @@ class ResourceDialog(QDialog):
         self.nav_deployment.setEnabled(False)
         self.nav_pod.setEnabled(False)
         def load():
+            if self.kind == "deployment":
+                return self.api.deployments(cluster, namespace), [], []
             return self.api.deployments(cluster, namespace), self.api.replica_sets(cluster, namespace), self.api.pods(cluster, namespace)
         def done(result):
             if request != self._navigation_request:
@@ -979,7 +993,7 @@ class ResourceDialog(QDialog):
         if navigate:
             if deployment:
                 self._navigate_to("deployment", deployment)
-            elif self.nav_pod.currentData():
+            elif self.kind == "pod" and self.nav_pod.currentData():
                 self._navigate_to("pod", self.nav_pod.currentData())
 
     def _navigate_to(self, kind, name):
@@ -1091,7 +1105,7 @@ class ResourceDialog(QDialog):
         self.console_lock.clicked.connect(self._lock_terminal_access)
         console_row.addWidget(self.console_lock)
         terminal_layout.addLayout(console_row)
-        self.tabs.addTab(terminal, "terminal")
+        self.tabs.addTab(terminal, "Terminal")
         self.terminal_page = terminal
         self.console_unlocked_until = 0.0
         self.terminal_timer = QTimer(self)
@@ -1151,17 +1165,17 @@ class ResourceDialog(QDialog):
                 except Exception as exc:
                     if server_forbidden(exc) and hasattr(self.controller, "access_denied"):
                         self.controller.access_denied.emit(cid, "POST", f"/api/v1/namespaces/{namespace}/pods/{name}/exec")
-                        raise PermissionError("Нет доступа к terminal этого Pod. Режим администратора выключен.") from exc
+                        raise PermissionError("Нет доступа к Terminal этого Pod. Режим администратора выключен.") from exc
                     raise
         def terminal_failed(message):
             if message.startswith(("Режим администратора недоступен", "Не удалось подтвердить права администратора")):
                 self.controller.set_read_only(True)
                 self.console_output.append(message)
                 return
-            if server_forbidden(message) or message.startswith(("Нет доступа к terminal", "Kubernetes запретил доступ (403)")):
+            if server_forbidden(message) or message.startswith(("Нет доступа к Terminal", "Kubernetes запретил доступ (403)")):
                 if hasattr(self.controller, "set_read_only"):
                     self.controller.set_read_only(True)
-                self.console_output.append("Нет доступа к terminal этого Pod. Режим администратора выключен.")
+                self.console_output.append("Нет доступа к Terminal этого Pod. Режим администратора выключен.")
             else:
                 self.console_output.append(f"Ошибка: {message}\nИсход удалённой команды может быть неизвестен. Проверьте состояние ресурса и процессов перед повтором.")
         self._mutate(execute,
@@ -1170,7 +1184,7 @@ class ResourceDialog(QDialog):
                      terminal=True)
 
     def _deployment_tabs(self):
-        from PyQt6.QtWidgets import QHeaderView
+        from PyQt5.QtWidgets import QHeaderView
         self.pod_table = ResourceList()
         self.pod_table.set_empty_text("Загрузка Pod…")
         table = self.pod_table
@@ -1209,6 +1223,7 @@ class ResourceDialog(QDialog):
         self.deployment_timer = QTimer(self)
         self.deployment_timer.timeout.connect(lambda: self.reload_deployment_pods() if self.isVisible() else None)
         self.deployment_timer.start(5000)
+        mark_poll_timer(self.deployment_timer)
         self.deployment_period = QLabel("Автообновление: 5 сек")
         self.deployment_period.setObjectName("resourceRefresh")
         self.deployment_period.setContentsMargins(18, 4, 18, 4)
@@ -1224,6 +1239,8 @@ class ResourceDialog(QDialog):
             self.controller.open_resource(self.cluster_id, "pod", self.namespace, name, expected_uid=uid)
 
     def reload_deployment_pods(self):
+        if not polling_allowed(self):
+            return
         if self._pods_loading or self.pending_operation:
             return
         self.deployment_period.setText(f"Автообновление: {self.deployment_timer.interval()/1000:g} сек")
@@ -1391,7 +1408,7 @@ class ResourceDialog(QDialog):
             display({"pods": [dict(value, pod=identity[0]) for identity, value in self._pod_metrics.items()]})
         else:
             def refresh_info():
-                if getattr(table, "_loading", False):
+                if getattr(table, "_loading", False) or not polling_allowed(self):
                     return
                 table._loading = True
                 def done(value):
@@ -1407,6 +1424,7 @@ class ResourceDialog(QDialog):
             timer = QTimer(table)
             timer.timeout.connect(lambda: refresh_info() if table.isVisible() else None)
             timer.start(10000)
+            mark_poll_timer(timer)
 
     def _select_deployment_graph(self, name):
         pod = next((p for p in self._displayed_pods if p.get("metadata", {}).get("name") == name), {})
@@ -1503,10 +1521,6 @@ class ResourceDialog(QDialog):
                 for button in (self.replica_up, self.replica_down):
                     button.setEnabled(False)
                     button.setToolTip("Числом реплик управляет HPA: " + ", ".join(self._hpa_controllers))
-            elif self._rollout_in_progress:
-                for button in (self.replica_up, self.replica_down):
-                    button.setEnabled(False)
-                    button.setToolTip("Идёт обновление ReplicaSet. Дождитесь завершения rollout.")
             elif (self._scaling_target if self._scaling_target is not None else self.resource.get("spec", {}).get("replicas", 1)) <= 0:
                 self.replica_down.setEnabled(False)
                 self.replica_down.setToolTip("Число реплик уже равно нулю.")
@@ -1647,6 +1661,8 @@ class ResourceDialog(QDialog):
             super().reject()
 
     def refresh_object(self, *, notify_errors=True):
+        if not polling_allowed(self):
+            return
         if self.kind == "deployment":
             self.reload_deployment_pods()
             return
@@ -1755,7 +1771,7 @@ class ResourceDialog(QDialog):
     def scale_by(self, delta):
         if not self._ensure_write(replica_step=True):
             return
-        if self._rollout_in_progress or self._hpa_controllers:
+        if self._hpa_controllers:
             return
         current = self._scaling_target if self._scale_snapshot is not None else self.resource.get("spec", {}).get("replicas", 1)
         value = max(0, min(10000, current+delta))
@@ -1775,7 +1791,7 @@ class ResourceDialog(QDialog):
     def _apply_scale(self, snapshot, value, *, revalidate=False):
         if not self._ensure_write():
             return
-        if self._rollout_in_progress or self._hpa_controllers:
+        if self._hpa_controllers:
             return
         current = snapshot.get("spec", {}).get("replicas", 1)
         if value == current:
@@ -1822,7 +1838,7 @@ class ResourceDialog(QDialog):
             return
         snapshot, value = self._scale_snapshot, self._scaling_target
         self._cancel_scale_draft(lock=False)
-        if (value == snapshot.get("spec", {}).get("replicas", 1) or self._hpa_controllers or self._rollout_in_progress
+        if (value == snapshot.get("spec", {}).get("replicas", 1) or self._hpa_controllers
                 or not self._matches_opened_target() or getattr(self, "_navigation_pending", False)):
             if hasattr(self.controller, "set_read_only"):
                 self.controller.set_read_only(True)
@@ -2084,15 +2100,6 @@ class MainWindow(QMainWindow):
         self._setup_matrix()
         self.quotas_page = self._resource_page("quota", "Квоты ресурсов")
         self.configmaps_page = self._resource_page("configmap", "ConfigMaps")
-        self.allpods_page = self._resource_page("pod", "Все Pod")
-        allpods_button = QPushButton("Все Pod")
-        allpods_button.setToolTip("Все Pod выбранного namespace, включая StatefulSet, DaemonSet и Job.")
-        allpods_button.setObjectName("sideNav")
-        allpods_button.setCheckable(True)
-        allpods_button.clicked.connect(lambda: self.navigate_workspace(self.tabs.indexOf(self.allpods_page)))
-        self.nav_group.addButton(allpods_button)
-        self.nav_buttons.append(allpods_button)
-        side.insertWidget(side.count()-2, allpods_button)
         self.tabs.tabBar().hide()
         self._active_workspace_index = 0
         self.tabs.currentChanged.connect(lambda index: self.nav_buttons[index].setChecked(True))
@@ -2131,6 +2138,29 @@ class MainWindow(QMainWindow):
         self.auth_timer = QTimer(self)
         self.auth_timer.timeout.connect(self._prompt_expired_login)
         self.auth_timer.start(15000)
+        self.polling_state = PollingState(self, self._resume_cluster_polling)
+        for timer in self.findChildren(QTimer):
+            if timer is self.timer or timer is self.auth_timer or timer is self.admin_access.timer:
+                mark_poll_timer(timer)
+
+    def _resume_cluster_polling(self):
+        if self._closing or self.isMinimized():
+            return
+        page = self.tabs.currentWidget()
+        if page in (self.dumps_page, self.versions_page):
+            page.refresh_data(force=True)
+        else:
+            self.refresh()
+        panel = getattr(self, "_resource_panel", None)
+        if panel:
+            panel.refresh_object(notify_errors=False)
+            current = panel.tabs.currentWidget()
+            if current is getattr(panel, "log_view", None):
+                panel.log_view.load()
+            for metrics in panel.findChildren(MetricsWidget):
+                if metrics.isVisible():
+                    metrics.load()
+        self._prompt_expired_login()
 
     def set_read_only(self, readonly):
         if not readonly and self._write_operation is not None:
@@ -2145,7 +2175,7 @@ class MainWindow(QMainWindow):
             for panel in getattr(self, "_resource_stack", []):
                 if hasattr(panel, "console_lock"):
                     panel.lock_console()
-        self.statusBar().showMessage("Изменения заблокированы." if readonly else "Разрешено одно изменение; terminal — на одну минуту.", 5000)
+        self.statusBar().showMessage("Изменения заблокированы." if readonly else "Разрешено одно изменение; Terminal — на одну минуту.", 5000)
 
     def refresh_write_controls(self):
         for panel in getattr(self, "_resource_stack", []):
@@ -2296,7 +2326,7 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self._prompt_expired_login)
 
     def _prompt_expired_login(self):
-        if self._closing or self._auth_busy:
+        if self._closing or self._auth_busy or not polling_allowed(self):
             return
         clusters = [c for c in self.store.clusters() if c["enabled"] and
                     (c["id"] in self._unauthorized_clusters or self.store.login_required(c)) and
@@ -2314,26 +2344,36 @@ class MainWindow(QMainWindow):
                     unresolved.append(cluster["id"])
             return unresolved
         def done(unresolved):
+            if not polling_allowed(self):
+                self._auth_busy = False
+                return
             for cluster in clusters:
                 if cluster["id"] not in unresolved:
                     self._unauthorized_clusters.discard(cluster["id"])
             remaining = [c for c in self.store.clusters() if c["id"] in unresolved and c["enabled"]]
+            imported = [c for c in remaining if c.get("authMode") == "kubeconfig"]
             if remaining:
                 groups = {}
                 for cluster in remaining:
-                    key = (cluster["server"], cluster["username"])
+                    if cluster.get("authMode") == "kubeconfig":
+                        self._auth_dismissed[cluster["id"]] = self.api.authorization.signature(cluster)
+                        self.statusBar().showMessage(f"{cluster['name']}: обновите kubeconfig в настройках.", 15000)
+                        continue
+                    key = ("shared" if cluster.get("sharedPassword") else cluster["server"], cluster["username"])
                     groups.setdefault(key, {"username": cluster["username"], "clusters": []})["clusters"].append(cluster)
-                dialog = LoginGroupsDialog(self, list(groups.values()))
-                accepted = run_dialog(dialog) == QDialog.DialogCode.Accepted
+                dialog = LoginGroupsDialog(self, list(groups.values())) if groups else None
+                accepted = run_dialog(dialog) == QDialog.DialogCode.Accepted if dialog else False
                 for cluster in remaining:
+                    if cluster.get("authMode") == "kubeconfig":
+                        continue
                     if accepted:
                         self._unauthorized_clusters.discard(cluster["id"])
                         self._auth_dismissed.pop(cluster["id"], None)
                     else:
                         self._auth_dismissed[cluster["id"]] = self.api.authorization.signature(cluster)
             self._auth_busy = False
-            self.statusBar().showMessage("Готово")
             self.refresh()
+            self.statusBar().showMessage("Обновите kubeconfig в настройках: " + ", ".join(c['name'] for c in imported) if imported else "Готово", 15000)
         def failed(message):
             self._auth_busy = False
             self.statusBar().showMessage(message)
@@ -2573,7 +2613,7 @@ class MainWindow(QMainWindow):
         self.matrix.setProperty("viewColor", color)
         self.matrix.frozen.setStyleSheet(f"QTableView#frozenDeployment {{background:{background};}}")
         palette = self.matrix.palette()
-        from PyQt6.QtGui import QPalette
+        from PyQt5.QtGui import QPalette
         palette.setColor(QPalette.ColorRole.Base, QColor(background))
         self.matrix.setPalette(palette)
         self.view_bar.colors = [view.get("color", "transparent") for view in self.views.views]
@@ -2614,7 +2654,7 @@ class MainWindow(QMainWindow):
             action.triggered.connect(lambda checked=False, color=color: self._set_view_color(color))
         action = menu.addAction("Удалить", self._remove_view)
         action.setEnabled(len(self.views.views) > 1)
-        menu.exec(self.view_bar.mapToGlobal(point))
+        menu.exec_(self.view_bar.mapToGlobal(point))
 
     def _move_view(self, source, target):
         view = self.views.views.pop(source)
@@ -2682,7 +2722,7 @@ class MainWindow(QMainWindow):
                 error(self, str(exc))
 
     def _scope_menu(self, title, key):
-        from PyQt6.QtGui import QCursor
+        from PyQt5.QtGui import QCursor
         if key == "selectedDeployments":
             values = sorted({name for c in self.snapshot.values() for r in c["namespaces"].values() for name in index_scope(r)[0]})
             choices = [(v, v) for v in values]
@@ -2709,7 +2749,7 @@ class MainWindow(QMainWindow):
                 current = [v for v, _ in choices] if current is None else list(current)
                 apply(list(dict.fromkeys(current + [value])) if checked else [v for v in current if v != value])
             action.toggled.connect(toggle)
-        menu.exec(QCursor.pos())
+        menu.exec_(QCursor.pos())
 
     def _select_scope(self):
         view = self.views.active
@@ -2789,17 +2829,27 @@ class MainWindow(QMainWindow):
 
     def _resource_page(self, kind: str, title: str) -> QWidget:
         if kind == "quota":
+            from .inventory_pages import ClusterPicker
+            page = QWidget()
+            layout = QVBoxLayout(page)
+            heading = QHBoxLayout()
+            section_title = QLabel("Квоты ресурсов · использовано / лимит")
+            section_title.setObjectName("sectionTitle")
+            heading.addWidget(section_title)
+            heading.addStretch()
+            self.quota_clusters = ClusterPicker(lambda: [c for c in self.store.clusters() if c["enabled"]])
+            self.quota_clusters.changed.connect(self._quota_filter_changed)
+            heading.addWidget(self.quota_clusters)
+            layout.addLayout(heading)
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             self.quota_content = QWidget()
             self.quota_layout = QVBoxLayout(self.quota_content)
             self.quota_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-            section_title = QLabel("Квоты ресурсов · использовано / лимит")
-            section_title.setObjectName("sectionTitle")
-            self.quota_layout.addWidget(section_title)
             scroll.setWidget(self.quota_content)
-            self.tabs.addTab(scroll, title)
-            return scroll
+            layout.addWidget(scroll, 1)
+            self.tabs.addTab(page, title)
+            return page
         page = QWidget()
         self.tabs.addTab(page, title)
         layout = QVBoxLayout(page)
@@ -2819,11 +2869,11 @@ class MainWindow(QMainWindow):
         controls.addStretch(1)
         layout.addLayout(controls)
         table = ResourceList()
-        table.setColumnCount(5 if kind == "pod" else 3)
-        table.setHorizontalHeaderLabels(["Кластер", "Namespace", "Имя", "Владелец", "Состояние"] if kind == "pod" else ["Кластер", "Namespace", "Имя"])
+        table.setColumnCount(3)
+        table.setHorizontalHeaderLabels(["Кластер", "Namespace", "Имя"])
         search_controls = QHBoxLayout()
         page.search_field = QLineEdit()
-        page.search_field.setPlaceholderText("Найти имя, владельца или состояние…" if kind == "pod" else "Найти ConfigMap…")
+        page.search_field.setPlaceholderText("Найти ConfigMap…")
         page.search_field.setClearButtonEnabled(True)
         page.search_field.setToolTip("Поиск по текущему списку · Ctrl+F")
         page.search_field.textChanged.connect(table.set_filter)
@@ -2842,11 +2892,26 @@ class MainWindow(QMainWindow):
         table.cellDoubleClicked.connect(lambda row, col: self.open_resource_row(kind, row))
         return page
 
+    def _clear_quota_cards(self):
+        while self.quota_layout.count():
+            child = self.quota_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+
+    def _quota_filter_changed(self):
+        self._quota_generation = getattr(self, "_quota_generation", 0) + 1
+        self.quota_clusters.update_text()
+        self._clear_quota_cards()
+        self.load_quotas()
+
     def load_quotas(self):
-        if getattr(self, "_loading_quotas", False):
+        if getattr(self, "_loading_quotas", False) or not polling_allowed(self):
             return
         self._loading_quotas = True
-        clusters = [c for c in self.store.clusters() if c["enabled"]]
+        generation = getattr(self, "_quota_generation", 0)
+        self.quota_clusters.update_text()
+        selected = self.quota_clusters.ids()
+        clusters = [c for c in self.store.clusters() if c["enabled"] and c["id"] in selected]
         def load():
             result = []
             for cluster in clusters:
@@ -2861,12 +2926,10 @@ class MainWindow(QMainWindow):
             return result
         def display(groups):
             self._loading_quotas = False
-            while self.quota_layout.count():
-                child = self.quota_layout.takeAt(0)
-                if child.widget(): child.widget().deleteLater()
-            title = QLabel("Квоты ресурсов · использовано / лимит")
-            title.setObjectName("sectionTitle")
-            self.quota_layout.addWidget(title)
+            if generation != getattr(self, "_quota_generation", 0):
+                self.load_quotas()
+                return
+            self._clear_quota_cards()
             for cluster, namespace, quotas, failure in groups:
                 if not quotas and not failure:
                     continue
@@ -2874,11 +2937,17 @@ class MainWindow(QMainWindow):
                     self.quota_layout.addWidget(QLabel(failure))
                 for quota in quotas:
                     self.quota_layout.addWidget(QuotaCard(cluster, namespace, quota))
+            if not self.quota_layout.count():
+                self.quota_layout.addWidget(QLabel("Квоты ресурсов не найдены." if selected else "Выберите кластеры."))
             self.quota_layout.addStretch()
         def failed(message):
             self._loading_quotas = False
+            if generation != getattr(self, "_quota_generation", 0):
+                self.load_quotas()
+                return
             self.statusBar().showMessage(message)
-        self.background.submit(load, display, failed)
+        if self.background.submit(load, display, failed) is False:
+            failed("Не удалось начать чтение квот.")
 
     def _invalidate_resource_list(self, kind, clear=True):
         _, _, table = getattr(self, f"{kind}_controls")
@@ -2932,7 +3001,7 @@ class MainWindow(QMainWindow):
         scroll_position = table.verticalScrollBar().value()
         table.setCurrentItem(None)
         table.setRowCount(len(values))
-        table.set_empty_text("Pod не найдены." if kind == "pod" else "ConfigMap не найдены.")
+        table.set_empty_text("ConfigMap не найдены.")
         for row, value in enumerate(values):
             metadata = value.get("metadata", {})
             for col, text in enumerate((label, namespace, metadata.get("name", ""))):
@@ -2940,10 +3009,6 @@ class MainWindow(QMainWindow):
             table.item(row, 2).setData(Qt.ItemDataRole.UserRole, (cluster_id, kind, namespace, metadata.get("name", ""), metadata.get("uid")))
             if table.item(row, 2).data(Qt.ItemDataRole.UserRole) == selected_identity:
                 table.selectRow(row)
-            if kind == "pod":
-                owner = next((o for o in metadata.get("ownerReferences", []) if o.get("controller")), {})
-                table.setItem(row, 3, item(f"{owner.get('kind', 'Standalone / mirror')} {owner.get('name', '')}"))
-                table.setItem(row, 4, item(pod_status(value)))
         table.resizeColumnsToContents()
         table.setEnabled(True)
         table.apply_filter()
@@ -3018,7 +3083,7 @@ class MainWindow(QMainWindow):
         apply_caption_color(self, write_background(self.preferences.get("theme") == "light") if not self.preferences.get("read_only", True) else None)
         color = colors["foreground"] if self.preferences.get("read_only", True) else "#FFFFFF"
         specs = (("Нагрузки и Pod", "workloads"), ("Квоты ресурсов", "quota"), ("ConfigMaps", "config"),
-                 ("Все Pod", "pods"), ("Журнал", "logs"), ("Dumps", "dumps"), ("Сверка версий", "versions"))
+                 ("Журнал", "logs"), ("Dumps", "dumps"), ("Сверка версий", "versions"))
         pairs = [(button, label, icon) for button, (label, icon) in zip(self.nav_buttons, specs)]
         pairs.extend(((self.settings_button, "Настройки", "settings"), (self.shell_actions.mode, "Режим администратора", "admin"),
                       (self.shell_actions.help_button, "help", "help")))
@@ -3085,9 +3150,9 @@ class MainWindow(QMainWindow):
         client_row.addWidget(choose)
         general_form.addRow("kubectl path", client_row)
         table = ResourceList()
-        table.setColumnCount(7)
+        table.setColumnCount(8)
         table.setProperty("clusterSettings", True)
-        table.setHorizontalHeaderLabels(["Имя", "API server", "Пользователь", "Активен", "Вход", "Пароль сохранён", "Доступ"])
+        table.setHorizontalHeaderLabels(["Имя", "API server", "Пользователь", "Активен", "Вход", "Пароль сохранён", "Доступ", "Общий пароль"])
         table.enable_text_copy({1: "хост", 2: "логин"})
         table.setToolTip("Хост и логин: Ctrl+C — копировать ячейку; двойной клик — выделить текст; ПКМ — меню копирования.")
         cluster_layout.addWidget(table, 1)
@@ -3108,6 +3173,7 @@ class MainWindow(QMainWindow):
             access_background.submit(lambda: self.api.access_summary(cid, namespaces), display,
                                      lambda message: display({"level": "Не определён", "detail": message}))
         def populate():
+            blocked = table.blockSignals(True)
             clusters = self.store.clusters()
             table.setRowCount(len(clusters))
             for row, cluster in enumerate(clusters):
@@ -3116,13 +3182,31 @@ class MainWindow(QMainWindow):
                     table.setItem(row, col, item(value))
                 table.item(row, 0).setData(Qt.ItemDataRole.UserRole, cluster["id"])
                 table.setItem(row, 6, item("Проверка…" if cluster.get("enabled") else "Отключён"))
+                checkbox = item("")
+                checkbox.setFlags(checkbox.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                checkbox.setCheckState(Qt.CheckState.Checked if cluster.get("sharedPassword") else Qt.CheckState.Unchecked)
+                checkbox.setToolTip("Один сохранённый пароль для одинакового логина только в отмеченных кластерах.")
+                table.setItem(row, 7, checkbox)
+                table.topLevelItem(row).setCheckState(7, checkbox.checkState())
                 if cluster.get("enabled"):
                     request_access(cluster)
             table.resizeColumnsToContents()
             table.clearSelection()
             table.setCurrentItem(None)
+            table.blockSignals(blocked)
             return clusters
         clusters = populate()
+        def shared_changed(entry, column):
+            nonlocal clusters
+            if column != 7:
+                return
+            try:
+                self.store.set_shared_password(entry.data(0, Qt.ItemDataRole.UserRole), entry.checkState(7) == Qt.CheckState.Checked)
+                clusters = self.store.clusters()
+            except (OSError, ValueError) as exc:
+                error(dialog, str(exc))
+                clusters = populate()
+        table.itemChanged.connect(shared_changed)
         buttons = QHBoxLayout()
         def selected():
             row = table.currentRow()
@@ -3136,6 +3220,40 @@ class MainWindow(QMainWindow):
         add.setToolTip("Добавить подключение. Новый кластер Kubernetes не создаётся.")
         add.clicked.connect(lambda: edit())
         buttons.addWidget(add)
+        import_config = QPushButton("Добавить из kubeconfig…")
+        def choose_config():
+            path, _ = QFileDialog.getOpenFileName(dialog, "Импорт kubeconfig", "", "Все файлы (*)")
+            if not path:
+                return
+            from .kubeconfig_import import read_contexts
+            def choose_contexts(entries):
+                selection = QDialog(dialog)
+                selection.setWindowTitle("Контексты kubeconfig")
+                selection.resize(650, 360)
+                box = QVBoxLayout(selection)
+                listing = QListWidget()
+                box.addWidget(listing)
+                for entry in entries:
+                    choice = QListWidgetItem(f"{entry['name']} · {entry['server']} · {entry['username']}")
+                    choice.setCheckState(Qt.CheckState.Checked)
+                    listing.addItem(choice)
+                actions = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+                actions.button(QDialogButtonBox.StandardButton.Ok).setText("Добавить")
+                actions.button(QDialogButtonBox.StandardButton.Cancel).setText("Отмена")
+                actions.accepted.connect(selection.accept)
+                actions.rejected.connect(selection.reject)
+                box.addWidget(actions)
+                if run_dialog(selection) != QDialog.DialogCode.Accepted:
+                    return
+                chosen = [entry for index, entry in enumerate(entries) if listing.item(index).checkState() == Qt.CheckState.Checked]
+                def done(_):
+                    nonlocal clusters
+                    clusters = populate()
+                    self.refresh()
+                access_background.submit(lambda: self.store.import_contexts(chosen), done, lambda message: error(dialog, message))
+            access_background.submit(lambda: read_contexts(path), choose_contexts, lambda message: error(dialog, message))
+        import_config.clicked.connect(choose_config)
+        buttons.addWidget(import_config)
         change = QPushButton("Настроить / войти…")
         change.setToolTip("Изменить выбранное подключение или восстановить вход в кластер.")
         change.clicked.connect(lambda: edit(selected()) if selected() else None)
@@ -3200,14 +3318,14 @@ class MainWindow(QMainWindow):
         run_dialog(dialog)
 
     def refresh(self):
+        if not polling_allowed(self):
+            return
         if self.tabs.currentIndex() == 0:
             self.refresh_matrix()
         elif self.tabs.currentIndex() == 1:
             self._refresh_resource_controls("quota")
         elif self.tabs.currentIndex() == 2:
             self._refresh_resource_controls("configmap")
-        elif self.tabs.currentWidget() is self.allpods_page:
-            self._refresh_resource_controls("pod")
         elif self.tabs.currentWidget() in (self.dumps_page, self.versions_page):
             self.tabs.currentWidget().refresh_data()
 
@@ -3246,6 +3364,8 @@ class MainWindow(QMainWindow):
             self.load_resource_page(kind)
 
     def refresh_matrix(self):
+        if not polling_allowed(self):
+            return
         if getattr(self, "loading_matrix", False):
             return
         clusters = [item for item in self.store.clusters() if item["enabled"]]
@@ -3399,6 +3519,8 @@ class MainWindow(QMainWindow):
             self.matrix.horizontalHeaderItem(col).setToolTip(f"{label} / {namespace}\nПоследний успех: {scope.get('_last_success', 'неизвестно')}" + ("\nДополнительные типы ещё загружаются." if scope.get("_loading") else "") + ("\nУСТАРЕЛО: " + scope.get("_error", "ошибка обновления") if stale else "") + ("\nНе прочитаны типы: " + ", ".join(failed_types) if failed_types else ""))
         self.matrix_data.clear()
         visible_pod_count = 0
+        totals = {status: 0 for status in self.status_filters}
+        total_pods = 0
         for row, name in enumerate(deployments):
             label = name.split("/", 1)[1] if row_kinds[name] != "Deployment" and "/" in name else name
             self.matrix.setItem(row, 0, item(label))
@@ -3413,10 +3535,13 @@ class MainWindow(QMainWindow):
                 filtered = []
                 for pod in pods:
                     status = pod_status(pod)
+                    total_pods += 1
+                    if status in totals:
+                        totals[status] += 1
                     if status == "Succeeded":
                         status = "Completed"
                     deadline = recent_activity_deadline(pod, now)
-                    restarted = deadline is not None
+                    restarted = deadline is not None and status == "Running"
                     pod["_recent"] = restarted
                     if deadline is not None and (next_expiry is None or deadline < next_expiry):
                         next_expiry = deadline
@@ -3427,13 +3552,19 @@ class MainWindow(QMainWindow):
                 for pod in filtered:
                     pod["_stale"] = bool(resources.get("_stale")) or deployment.get("kind", "Deployment").lower() in resources.get("_type_errors", {})
                 text, missing = empty_workload(deployment, pods)
+                hidden_summary = ""
                 if pods and not filtered:
-                    text = "Скрыто фильтром"
+                    text = f"Скрыто: {len(pods)}"
+                    states = {}
+                    for pod in pods:
+                        state = pod_status(pod)
+                        states[state] = states.get(state, 0) + 1
+                    hidden_summary = "Скрыто фильтрами состояния: " + ", ".join(f"{state}: {count}" for state, count in states.items()) + ". Включите соответствующий фильтр над таблицей.\n"
                 cell = item(text)
                 if missing:
                     cell.setForeground(QColor("#E56B6E"))
                 cell.setData(Qt.ItemDataRole.UserRole, filtered)
-                cell.setToolTip("\n".join(str(c.get("reason", ""))+": "+str(c.get("message", "")) for c in deployment.get("status", {}).get("conditions", [])) or text or "Наведите на Pod для сведений")
+                cell.setToolTip(hidden_summary + ("\n".join(str(c.get("reason", ""))+": "+str(c.get("message", "")) for c in deployment.get("status", {}).get("conditions", [])) or text or "Наведите на Pod для сведений"))
                 self.matrix.setItem(row, col, cell)
                 self.matrix_data[(row, col)] = (cluster_id, namespace, name, deployment, filtered)
                 width = 48
@@ -3451,17 +3582,10 @@ class MainWindow(QMainWindow):
                 self.matrix.setColumnHidden(col, False)
         self.matrix.resizeColumnToContents(0)
         self.matrix.horizontalHeader().setMinimumSectionSize(36)
-        totals = {status: 0 for status in self.status_filters}
-        total_pods = 0
-        for ref in self.matrix_data.values():
-            for pod in ref[4]:
-                total_pods += 1
-                status = pod_status(pod)
-                if status in totals:
-                    totals[status] += 1
         for status, checkbox in self.status_filters.items():
             checkbox.setText(f"{'Error' if status == 'Failed' else status}  {totals[status]}")
         self.summary_label.setText(f"{total_pods}  Total")
+        self.summary_label.setToolTip(f"Всего Pod в выбранных кластерах, namespace и нагрузках: {total_pods}. Показано: {visible_pod_count}. Скрыто фильтрами состояния: {total_pods-visible_pod_count}.")
         for key, (title, button) in self.scope_buttons.items():
             selected = view.get(key)
             button.setText(f"{title}: {'Все' if selected is None else len(selected)} ▾")
@@ -3565,7 +3689,7 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(message)
                 previous = getattr(self, "_resource_panel", None)
                 if previous is not None:
-                    from PyQt6 import sip
+                    from PyQt5 import sip
                     if not sip.isdeleted(previous) and previous.kind == "deployment":
                         previous.deployment_notice.setText(message)
                         previous.deployment_notice.show()
@@ -3659,7 +3783,7 @@ class MainWindow(QMainWindow):
     def _position_resource_panel(self):
         if not hasattr(self, "workspace"):
             return
-        from PyQt6 import sip
+        from PyQt5 import sip
         overlay = getattr(self, "_resource_overlay", None)
         if overlay is not None and not sip.isdeleted(overlay):
             overlay.setGeometry(self.workspace.rect())

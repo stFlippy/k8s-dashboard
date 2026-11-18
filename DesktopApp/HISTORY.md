@@ -233,3 +233,32 @@ ResourceList (плоский QTreeWidget), квоты — карточками Q
 числами и полосами. Предпросмотры на тестовых данных:
 `.build-windows/refined-matrix-dark.png`, `refined-matrix-light.png`,
 `refined-quotas-dark.png`, `refined-quotas-light.png`, `refined-settings-light.png`.
+
+
+## Миграция на PyQt5 — 17.11.2026
+
+DesktopApp переведён с PyQt6 на зафиксированный стек CPython 3.11 x64,
+PyQt5 5.15.9, Qt runtime 5.15.2 и PyQt5-sip 12.18.0. Импорты, QAction,
+mouse coordinates, `exec_()`, QFontDatabase и High DPI адаптированы без
+изменения Kubernetes/backend, UserData, формата секретов и safety-проверок.
+Preflight подтвердил, что scoped enum из исходного кода поддерживаются данным
+PyQt5, поэтому они сохранены без необязательной массовой замены.
+
+Baseline Qt6: 265 тестов за 97.248 с, 1 Windows/POSIX skip. Результат Qt5:
+265 тестов за 97.015 с, тот же skip, failures отсутствуют. Compileall,
+smoke-импорт 43 модулей, pip check, target API preflight и release environment
+check прошли. Офлайн-wheelhouse установлен в третье чистое окружение с
+`--no-index --only-binary=:all:`; старый архив сохранён в
+`offline-deps/qt6-rollback`, новый архив и SHA-256 manifest созданы.
+
+Отдельный pip-audit 2.10.1 сохранил `dependency-audit.json` и сообщил 30 записей:
+7 для runtime cryptography 46.0.7, 14 для build-tool pip 23.2.1 и 9 для
+build-tool setuptools 65.5.0. Lock не изменён вне заданной матрицы; перед выпуском
+нужно принять риск либо согласовать отдельное обновление зависимостей. Аудит
+нативных Qt DLL этим результатом не заменяется.
+
+Portable `build-artifacts-qt5/Quaber` собран с Qt5Core/Gui/Widgets/Svg 5.15.2,
+qwindows, SVG/JPEG imageformats, SBOM и release manifest; Qt6-файлов нет.
+Интерактивный native smoke окна и полная матрица DPI 100/125/150/200%, два
+монитора и 60-минутный soak остаются ручной приёмкой. Production-кластер,
+Addons и пользовательская UserData при миграции не использовались и не менялись.
