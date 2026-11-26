@@ -136,23 +136,27 @@ class MatrixDeploymentModeTests(ShellFixture, unittest.TestCase):
         self.pod["metadata"]["creationTimestamp"] = (datetime.now(timezone.utc)-timedelta(minutes=1)).isoformat()
         rs = {"metadata": {"name": "app-rs", "uid": "rs", "ownerReferences": [
             {"controller": True, "kind": "Deployment", "name": "app", "uid": "d"}]}}
+        self.window.store.clusters = lambda: [dict(id=cid, name=data["name"], enabled=True, server="https://synthetic.invalid", username="fixture") for cid, data in self.window.snapshot.items()]
         self.window.snapshot = {"c": {"name": "Production", "namespaces": {"ns": {
             "deployments": [self.deployment], "pods": [self.pod], "replica_sets": [rs]}}}}
         self.window.render_matrix()
 
     def visible_pods(self):
-        return self.window.matrix.item(0, 1).data(Qt.ItemDataRole.UserRole)
+        return list(self.window.matrix.cell_visuals(0, 1))
 
     def test_toggle_is_visual_and_filters_keep_the_same_pod(self):
         self.window.status_filters["Running"].setChecked(False)
-        self.assertEqual(len(self.visible_pods()), 1)  # admitted by recent activity
+        self.assertEqual(self.visible_pods(), [])
+        self.assertEqual(self.window.recent_label.text(), '● Recently started 1')
         self.window.deploy_mode.setChecked(True)
+        self.assertEqual(self.visible_pods(), [])
+        self.window.status_filters['Running'].setChecked(True)
         self.assertEqual(len(self.visible_pods()), 1)
-        self.assertTrue(self.visible_pods()[0]["_recent"])
+        self.assertTrue(self.visible_pods()[0].recent)
         self.assertTrue(self.window.matrix.property("deployMode"))
         self.assertIn("30:00", self.window.deploy_mode.text())
         self.assertFalse(self.window.shell_actions.mode.isChecked())
-        self.window.recent.setChecked(False)
+        self.window.status_filters['Running'].setChecked(False)
         self.assertEqual(self.visible_pods(), [])
         self.api.resource.assert_not_called()
         self.api.pods.assert_not_called()
@@ -191,13 +195,23 @@ class MatrixDeploymentModeTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.window.deploy_mode.text(), "Режим деплоя")
 
     def test_activity_ages_out_without_network_refresh(self):
-        self.window.status_filters["Running"].setChecked(False)
-        self.pod["metadata"]["creationTimestamp"] = (datetime.now(timezone.utc)-timedelta(seconds=RECENT_SECONDS-0.6)).isoformat()
-        self.window.render_matrix()
-        self.assertEqual(len(self.visible_pods()), 1)
-        self.assertTrue(self.window.recent_age_timer.isActive())
-        QTest.qWait(1000)
-        self.assertEqual(self.visible_pods(), [])
+        now = [datetime(2026, 1, 1, tzinfo=timezone.utc)]
+        class ClockDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None): return now[0]
+        self.pod["metadata"]["creationTimestamp"] = now[0].isoformat()
+        with patch('quaber.ui.datetime', ClockDateTime):
+            self.window.status_filters["Running"].setChecked(False)
+            self.window.render_matrix()
+            self.assertEqual(self.visible_pods(), [])
+            self.window.status_filters["Running"].setChecked(True)
+            self.window.render_matrix()
+            self.assertEqual(len(self.visible_pods()), 1)
+            self.assertTrue(self.visible_pods()[0].recent)
+            now[0] += timedelta(seconds=RECENT_SECONDS+1)
+            self.window.recent_age_timer.timeout.emit()
+            self.assertEqual(len(self.visible_pods()), 1)
+            self.assertFalse(self.visible_pods()[0].recent)
         self.assertFalse(self.window.recent_age_timer.isActive())
         self.window.refresh.assert_not_called()
         self.api.pods.assert_not_called()

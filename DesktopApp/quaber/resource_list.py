@@ -109,6 +109,12 @@ class ResourceList(QTreeWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("resourceList")
+        self._batch_depth = 0
+        self._batch_dirty = False
+        for signal in (self.model().dataChanged, self.model().headerDataChanged,
+                       self.model().rowsAboutToBeInserted, self.model().rowsAboutToBeRemoved,
+                       self.model().modelAboutToBeReset, self.model().layoutAboutToBeChanged):
+            signal.connect(self._mark_batch_changed)
         self.setHeader(ResourceHeader(self))
         self._manual_widths = {}
         self.header().manuallyResized.connect(self._remember_width)
@@ -133,6 +139,19 @@ class ResourceList(QTreeWidget):
         self.empty_label.setWordWrap(True)
         self.empty_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self._update_empty()
+
+    def _mark_batch_changed(self, *args):
+        if self._batch_depth and not self._batch_dirty:
+            self._batch_dirty = True
+            self.setUpdatesEnabled(False)
+
+    def begin_batch(self):
+        if not self._batch_depth:
+            self._batch_dirty = False
+        self._batch_depth += 1
+
+    def end_batch(self):
+        self._batch_depth -= 1
 
     def enable_text_copy(self, columns):
         """Allow read-only text selection for named columns, preserving row actions."""
@@ -178,10 +197,15 @@ class ResourceList(QTreeWidget):
         if not hasattr(self, "empty_label"):
             return
         empty = not any(not self.topLevelItem(row).isHidden() for row in range(self.topLevelItemCount()))
+        revision = (empty, bool(self.topLevelItemCount()), self.empty_text, self.viewport().size())
+        if revision == getattr(self, '_empty_revision', None):
+            return
+        self._empty_revision = revision
         self.empty_label.setText("Нет совпадений." if self.topLevelItemCount() else self.empty_text)
         self.empty_label.setGeometry(10, 16, max(0, self.viewport().width()-20), 60)
         self.empty_label.setVisible(empty)
-        self.empty_label.raise_()
+        if empty:
+            self.empty_label.raise_()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -196,13 +220,17 @@ class ResourceList(QTreeWidget):
     def mouseMoveEvent(self, event):
         hovered = self.itemAt(event.pos())
         if hovered is not self._hovered_item:
+            if self._hovered_item is not None:
+                self.viewport().update(self.visualItemRect(self._hovered_item))
             self._hovered_item = hovered
-            self.viewport().update()
+            if hovered is not None:
+                self.viewport().update(self.visualItemRect(hovered))
         super().mouseMoveEvent(event)
 
     def leaveEvent(self, event):
-        self._hovered_item = None
-        self.viewport().update()
+        if self._hovered_item is not None:
+            self.viewport().update(self.visualItemRect(self._hovered_item))
+            self._hovered_item = None
         super().leaveEvent(event)
 
     def drawRow(self, painter, option, index):
@@ -222,6 +250,8 @@ class ResourceList(QTreeWidget):
 
     def setRowCount(self, count):
         while self.topLevelItemCount() > count:
+            if self.topLevelItem(self.topLevelItemCount()-1) is self._hovered_item:
+                self._hovered_item = None
             self.takeTopLevelItem(self.topLevelItemCount()-1)
         while self.topLevelItemCount() < count:
             entry = QTreeWidgetItem()
@@ -230,13 +260,21 @@ class ResourceList(QTreeWidget):
             self.addTopLevelItem(entry)
         self._update_empty()
 
+    def clear(self):
+        self._hovered_item = None
+        self._fitted_schema = None
+        super().clear()
+        self._update_empty()
+
     def setItem(self, row, column, cell):
         entry = self.topLevelItem(row)
         # Copy presentation and identity; later edits go directly to the tree item.
         for role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.ToolTipRole,
                      Qt.ItemDataRole.UserRole, Qt.ItemDataRole.ForegroundRole,
                      Qt.ItemDataRole.BackgroundRole, Qt.ItemDataRole.TextAlignmentRole):
-            entry.setData(column, role, cell.data(role))
+            value = cell.data(role)
+            if entry.data(column, role) != value:
+                entry.setData(column, role, value)
 
     def item(self, row, column):
         entry = self.topLevelItem(row)
@@ -263,6 +301,12 @@ class ResourceList(QTreeWidget):
         self.setCurrentItem(self.topLevelItem(row))
 
     def resizeColumnsToContents(self):
+        schema = (getattr(self, 'resource_scope', None), tuple(self.headerItem().text(c) for c in range(self.columnCount())))
+        if schema == getattr(self, '_fitted_schema', None):
+            return
+        if not self.rowCount():
+            return
+        self._fitted_schema = schema
         for column in range(self.columnCount()):
             if self.header().sectionResizeMode(column) != QHeaderView.ResizeMode.Stretch:
                 manual = self._manual_widths.get(self.headerItem().text(column))

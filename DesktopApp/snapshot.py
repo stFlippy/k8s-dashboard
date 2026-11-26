@@ -11,7 +11,7 @@ def create_snapshot(root):
     root = root.resolve()
     destination = root / "_rollback" / (datetime.now().strftime("%Y%m%d-%H%M%S-%f")+"-code-only")
     destination.mkdir(parents=True)
-    exclude = {"UserData", "venv", ".venv", "_rollback", ".build-windows", "build-artifacts", "__pycache__", ".git", "dist", "build", "Addons", "offline-deps", "wheelhouse"}
+    exclude = {"UserData", "venv", ".venv", "_rollback", ".build-windows", "build-artifacts", "__pycache__", ".git", "dist", "build", "Builds", "reports", "dumps", "Addons", "offline-deps", "wheelhouse"}
     allowed = {".py", ".md", ".txt", ".ps1", ".svg", ".ico", ".toml", ".lock"}
     excluded = {name.casefold() for name in exclude}
     hashes = {}

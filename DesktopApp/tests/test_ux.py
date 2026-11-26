@@ -21,44 +21,13 @@ from quaber.ui import MainWindow
 from quaber.preferences import PreferenceWriter
 
 
-class Deferred:
-    def __init__(self):
-        self.jobs = []
-
-    def submit(self, function, done=None, failed=None, **_):
-        self.jobs.append((function, done, failed))
-
-    def finish(self, value=None, failure=None, execute=False):
-        function, done, failed = self.jobs.pop(0)
-        if failure is not None:
-            failed(failure)
-        elif execute:
-            try:
-                result = function()
-            except Exception as exc:
-                failed(str(exc))
-            else:
-                done(result)
-        else:
-            done(value)
+from helpers_background import DeferredBackend as Deferred
 
 
-class LogUXTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.app = QApplication.instance() or QApplication([])
+from helpers_log_ui import LogFixture
 
-    def setUp(self):
-        self.owner = QWidget()
-        self.owner.controller = QWidget(self.owner)
-        self.owner.background = Deferred()
-        self.owner.api = Mock()
-        self.owner.cluster_id, self.owner.namespace, self.owner.name = "c", "ns", "pod"
-        self.view = PodLogs(self.owner, ["app", "sidecar"])
-        self.app.processEvents()  # the single initial request
-        self.view.timer.stop()
-        self.addCleanup(self.owner.deleteLater)
-        self.bg = self.owner.background
+class LogUXTests(LogFixture, unittest.TestCase):
+
 
     def test_old_success_and_error_cannot_leak_across_sources(self):
         self.view.container.setCurrentText("sidecar")
@@ -68,18 +37,24 @@ class LogUXTests(unittest.TestCase):
         self.bg.finish("sidecar logs")
         self.assertEqual(self.view.output.toPlainText(), "sidecar logs")
         self.view.load()
+        self.view.previous.set_availability('AVAILABLE')
         self.view.previous.setChecked(True)
-        self.assertEqual(self.view.output.toPlainText(), "")
+        self.assertEqual(self.view.output.toPlainText(), 'sidecar logs')
+        self.assertEqual(self.view._display_source, ('sidecar', False, 1000))
+        self.assertEqual(self.view.source, ('sidecar', True, 1000))
         self.bg.finish(failure="stale current error")
         self.assertTrue(self.view.error_label.isHidden())
         self.app.processEvents()
         self.bg.finish(failure="previous unavailable")
         self.assertFalse(self.view.error_label.isHidden())
-        self.assertNotIn("sidecar logs", self.view.output.toPlainText())
+        self.assertEqual(self.view.output.toPlainText(), 'sidecar logs')
+        self.assertEqual(self.view._display_source, ('sidecar', False, 1000))
+        self.assertIn('Новый источник не загружен', self.view.status.text())
         self.view.load()
         self.bg.finish("previous recovered")
         self.assertTrue(self.view.error_label.isHidden())
         self.assertEqual(self.view.output.toPlainText(), "previous recovered")
+        self.assertEqual(self.view._display_source, ('sidecar', True, 1000))
 
     def test_slow_response_is_displayed_even_if_next_poll_is_due(self):
         self.view.load()  # a second poll arrives before the first finishes
@@ -100,7 +75,9 @@ class LogUXTests(unittest.TestCase):
         self.assertEqual(self.view.count.text(), "2/2")
         self.view.find_next(True)
         self.assertEqual(self.view.count.text(), "1/2")
-        self.assertEqual(self.view.timer.interval(), 5000)
+        from quaber.polling import poll_interval
+        self.assertEqual(poll_interval(self.view.timer), 5000)
+        self.assertTrue(5000 <= self.view.timer.interval() <= 6000)
         self.assertFalse(hasattr(self.view, "polling"))
         self.assertFalse(self.view.follow.isChecked())
         self.view.update_search(select=False)
@@ -121,22 +98,30 @@ class LogUXTests(unittest.TestCase):
         self.bg.finish("two\nthree\nfour")
         self.assertEqual(self.view.output.textCursor().selectedText(), "two")
         self.assertEqual(self.view.pending_text, "two\nthree\nfour")
-        self.assertEqual(self.view.timer.interval(), 5000)
+        from quaber.polling import poll_interval
+        self.assertEqual(poll_interval(self.view.timer), 5000)
+        self.assertTrue(5000 <= self.view.timer.interval() <= 6000)
         self.assertFalse(hasattr(self.view, "polling"))
         self.view.resume_follow()
         self.assertEqual(self.view.output.toPlainText(), "two\nthree\nfour")
         self.assertIsNone(self.view.pending_text)
 
-    def test_export_saves_visible_fragment_and_names_source(self):
+    def test_export_downloads_full_server_log_and_names_displayed_source(self):
         self.bg.finish("visible snapshot")
         self.view.pause_follow()
         self.view.load()
         self.bg.finish("newer snapshot")
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "out.log"
+            def download(cid, ns, pod, container, previous, destination, **kwargs):
+                Path(destination).write_text('complete server log', encoding='utf-8')
+                return len(b'complete server log')
+            self.owner.api.download_logs.side_effect = download
             with patch("quaber.pod_logs.QFileDialog.getSaveFileName", return_value=(str(path), "")) as dialog:
                 self.view.export()
-            self.assertEqual(path.read_text(encoding="utf-8"), "visible snapshot")
+            self.bg.finish(execute=True)
+            self.assertEqual(path.read_text(encoding="utf-8"), "complete server log")
+            self.assertEqual(self.view.output.toPlainText(), 'visible snapshot')
             self.assertIn("pod-app-current-", dialog.call_args.args[2])
 
     def test_fixed_tail_and_follow_can_resume_without_disabling_polling(self):
@@ -170,14 +155,41 @@ class LogUXTests(unittest.TestCase):
             self.assertEqual(self.view.source, ("app", False, 1000))
             self.owner.api.download_logs.return_value = 9000000
             self.bg.finish(execute=True)  # the file transfer, not a full-text display
-            self.owner.api.download_logs.assert_called_once_with("c", "ns", "pod", "app", False, destination)
-            self.assertIn("Лог сохранён", self.view.download_status.text())
+            self.owner.api.download_logs.assert_called_once_with("c", "ns", "pod", "app", False, destination,
+                                                                 cancel=self.view._download_cancel)
+            self.assertFalse(self.view._download_cancel.is_set())
+            self.assertIn("Полный лог сохранён", self.view.download_status.text())
             self.owner.api.logs.side_effect = None
             self.bg.finish("tail restored")
             self.assertEqual(self.view.output.toPlainText(), "tail restored")
 
 
 class ShellFixture:
+    def assert_bound_call(self, method, arguments, action, kind):
+        from quaber.write_guard import WritePermit, parameter_digest
+        self.assertEqual(method.call_count,1)
+        call = method.call_args
+        self.assertEqual(call.args,arguments)
+        self.assertEqual(set(call.kwargs),{'permit','expected_version'} if action=='delete' else {'permit'})
+        permit = call.kwargs['permit']
+        self.assertIsInstance(permit,WritePermit)
+        cid, namespace, name = arguments[:3]
+        if action == 'scale':
+            uid = arguments[4]
+            parameters = {'replicas':arguments[3],'resourceVersion':arguments[5]}
+        elif action == 'yaml':
+            uid = arguments[3]['metadata']['uid']
+            parameters = arguments[3]
+        else:
+            uid = arguments[3]
+            if action == 'delete':
+                self.assertEqual(call.kwargs['expected_version'],'1')
+                parameters = {'mode':arguments[4],'resourceVersion':'1'}
+            else:
+                parameters = None
+        self.assertEqual(permit.intent.identity,(cid,kind,namespace,name,uid))
+        self.assertEqual(permit.intent.action,action)
+        self.assertEqual(permit.intent.parameters,parameter_digest(parameters))
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
@@ -189,18 +201,32 @@ class ShellFixture:
         with patch("quaber.ui.locate_kubectl", return_value=Path("unused.exe")),\
              patch.object(MainWindow, "refresh"), patch.object(MainWindow, "_prompt_expired_login"):
             self.window = MainWindow(store, Path(self.temp.name))
+            self.addCleanup(self.cleanup_window)
             self.window.timer.stop()
             self.window.auth_timer.stop()
             self.app.processEvents()
         self.window.refresh = Mock()
-        self.api = Mock()
-        self.api.cluster.return_value = {"name": "Production", "enabled": True}
+        self.window._prompt_expired_login = Mock()
+        from quaber.kubernetes import Kubernetes
+        # Constrain method names without masquerading as a real Kubernetes
+        # instance (which selects its physical collector implementation).
+        self.api = Mock(spec=[name for name in dir(Kubernetes) if not name.startswith('_')] + ['cache'])
+        self.api.cache = Mock()
+        def cluster(cid):
+            records = store.clusters()
+            return copy.deepcopy(next((c for c in records if c['id'] == cid), {
+                'id': cid, 'name': 'Production', 'enabled': True, 'server': 'https://synthetic.invalid',
+                'username': 'synthetic', 'authMode': 'kubeconfig', 'encryptedKubeconfig': 'synthetic'}))
+        self.api.cluster.side_effect = cluster
         self.api.is_cluster_administrator.return_value = True
+        self.api.request.return_value = {'status': {'allowed': True}}
         self.deployment = {"metadata": {"name": "app", "uid": "d", "resourceVersion": "1"},
             "spec": {"replicas": 1}, "status": {"readyReplicas": 1}}
-        self.pod = {"metadata": {"name": "app-pod", "uid": "11111111-1111-1111-1111-111111111111", "namespace": "ns",
+        self.pod = {"metadata": {"name": "app-pod", "uid": "11111111-1111-1111-1111-111111111111", "namespace": "ns", 'resourceVersion':'1',
             "ownerReferences": [{"kind": "ReplicaSet", "name": "app-rs", "uid": "rs", "controller": True}]},
-            "spec": {"containers": [{"name": "app"}, {"name": "sidecar"}]}, "status": {"phase": "Running"}}
+            "spec": {"containers": [{"name": "app"}, {"name": "sidecar"}]}, "status": {"phase": "Running",
+                'containerStatuses':[dict(name=name,containerID='synthetic://'+name+'-1',restartCount=0,
+                                          state={'running':{'startedAt':'2026-11-20T00:00:00Z'}}) for name in ('app','sidecar')]}}
         self.api.resource.side_effect = lambda c, kind, ns, name: self.deployment if kind == "deployment" else self.pod
         self.api.pods.return_value = [self.pod]
         self.api.deployments.return_value = [self.deployment]
@@ -208,10 +234,17 @@ class ShellFixture:
         self.api.events.return_value = []
         self.api.logs.return_value = "logs"
         self.api.metrics.return_value = {"available": False}
+        self.api.metrics_history.return_value = {'source': 'synthetic', 'series': {}}
+        self.api.metrics_many.return_value = {}
+        self.api.execute_pod.return_value = ('ok', '')
+        self.api.scaling_policy.return_value = {'known': True, 'controllers': []}
+        self.api.proxy = Mock()
+        self.api.store = Mock()
+        self.api.authorization = Mock()
+        self.api.authorization.signature.side_effect = lambda c: (c.get('encryptedKubeconfig'), c.get('encryptedPassword'), '')
         self.window.api = self.api
         self.window.resize(1100, 700)
         self.window.show()
-        self.addCleanup(self.cleanup_window)
         self.identity = ("c", "pod", "ns", "app-pod", self.pod["metadata"]["uid"])
 
     def cleanup_window(self):
@@ -221,7 +254,8 @@ class ShellFixture:
             panel.pending_operation = False
         self.window.close()
         self.window._cleanup_thread.join(5)
-        self.window.deleteLater()
+        from quaber.shutdown import release_window
+        release_window(self.window)
         self.app.processEvents()
 
     def wait(self):
@@ -239,6 +273,13 @@ class ShellFixture:
         for timer in panel.findChildren(QTimer):
             timer.stop()
         return panel
+
+    def ready_yaml(self, panel):
+        panel.tabs.setCurrentWidget(panel.yaml_editor)
+        deadline = time.monotonic() + 3
+        while not panel._yaml_ready and time.monotonic() < deadline:
+            QTest.qWait(10)
+        self.assertTrue(panel._yaml_ready)
 
 class ShellUXTests(ShellFixture, unittest.TestCase):
     def test_mouse_back_dirty_cancel_and_alt_left_same_navigation(self):
@@ -305,6 +346,7 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
 
     def test_location_picker_buttons_capture_the_target(self):
         from PyQt5.QtWidgets import QPushButton, QComboBox
+        self.window.store.clusters = lambda: [dict(id=cid, name=data["name"], enabled=True, server="https://synthetic.invalid", username="fixture") for cid, data in self.window.snapshot.items()]
         self.window.snapshot = {"c": {"name": "Production"}}
         self.window.matrix_data = {(0, column): ("c", namespace, "app", self.deployment, [])
                                    for column, namespace in ((1, "one"), (2, "two"))}
@@ -320,6 +362,7 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
         self.assertEqual(observations, [[]])
 
     def test_replica_fact_and_refresh_periods_are_explicit(self):
+        from quaber.polling import poll_interval
         from PyQt5.QtWidgets import QLabel
         from quaber.ui import MetricsWidget
         self.deployment["spec"]["replicas"] = 5
@@ -328,7 +371,8 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
         self.assertEqual(panel.context_values["Pods"].text(), "6/5")
         self.assertFalse(any(label.text() == "Реплики факт./запланировано" for label in panel.findChildren(QLabel)))
         self.assertEqual(panel.deployment_period.text(), "Автообновление: 1 сек")
-        self.assertEqual(panel.deployment_timer.interval(), 1000)
+        self.assertEqual(poll_interval(panel.deployment_timer),1000)
+        self.assertTrue(1000 <= panel.deployment_timer.interval() <= 1200)
         panel._go_back()
         pod = self.open_panel("pod")
         metrics = pod.findChild(MetricsWidget)
@@ -356,6 +400,7 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
     def test_yaml_poll_preserves_scroll_and_draft_until_explicit_reload(self):
         self.deployment["metadata"]["annotations"] = {f"key-{i:04}": "fixture" for i in range(900)}
         panel = self.open_panel("deployment")
+        self.ready_yaml(panel)
         panel.tabs.setCurrentWidget(panel.yaml_editor)
         editor = panel.yaml_editor.editor
         cursor = editor.textCursor()
@@ -381,7 +426,9 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
             panel.reload_yaml()
         self.assertEqual(editor.toPlainText(), draft)
         with patch("quaber.ui.confirm", return_value=True):
+            self.deployment = changed
             panel.reload_yaml()
+        self.wait()
         self.assertEqual(panel.version, "2")
         self.assertIn("replicas: 3", editor.toPlainText())
         self.assertTrue(panel.yaml_notice.isHidden())
@@ -398,7 +445,7 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
         with patch("quaber.ui.confirm", return_value=True), patch.object(panel, "_updated"):
             panel.restart()
             self.wait()
-        self.api.restart.assert_called_once_with("c", "ns", "app", "d", "2")
+        self.assert_bound_call(self.api.restart,("c", "ns", "app", "d", "2"),'restart','deployment')
 
     def test_write_mode_locks_after_idle_or_view_change(self):
         self.window.set_read_only(False)
@@ -435,6 +482,7 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
         self.assertFalse(self.window.windowIcon().pixmap(32, 32).isNull())
 
     def test_matrix_groups_workloads_and_cluster_labels_are_optional(self):
+        self.window.store.clusters = lambda: [dict(id=cid, name=data["name"], enabled=True, server="https://synthetic.invalid", username="fixture") for cid, data in self.window.snapshot.items()]
         self.window.snapshot = {"c": {"name": "Production", "namespaces": {"ns": {
             "deployments": [self.deployment], "pods": [self.pod], "replica_sets": [{"metadata": {
                 "name": "app-rs", "uid": "rs", "ownerReferences": [{"controller": True, "kind": "Deployment", "name": "app", "uid": "d"}]}}],
@@ -480,19 +528,18 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
     def test_replica_buttons_use_same_guarded_operation_and_disabled_hint(self):
         panel = self.open_panel("deployment")
         self.assertFalse(panel.replica_up.isEnabled())
-        with patch("quaber.widgets.QToolTip.showText") as hint:
+        with patch("quaber.tooltips.QToolTip.showText") as hint:
             QTest.mouseClick(panel.replica_up, Qt.MouseButton.LeftButton)
             self.assertTrue(hint.called)
         self.assertIn("режим администратора", hint.call_args.args[1])
         self.api.scale.assert_not_called()
         self.window.set_read_only(False)
-        self.api.scaling_info.return_value = "HPA отсутствует"
         with patch("quaber.ui.confirm", return_value=True), patch.object(panel, "_updated"):
             QTest.mouseClick(panel.replica_up, Qt.MouseButton.LeftButton)
             self.api.scale.assert_not_called()
             panel._commit_scale_draft()
             self.wait()
-        self.api.scale.assert_called_once_with("c", "ns", "app", 2, "d", "1")
+        self.assert_bound_call(self.api.scale,("c", "ns", "app", 2, "d", "1"),'scale','deployment')
         panel.pod_donut.set_pods([self.pod, {"status": {"phase": "Pending"}}])
         self.assertEqual(panel.pod_donut.counts, {"Running": 1, "Pending": 1})
         from PyQt5.QtWidgets import QLabel
@@ -523,6 +570,7 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
         self.assertEqual(box.button(QMessageBox.StandardButton.Cancel).text(), "Отмена")
 
     def test_matrix_group_captions_do_not_shift_clicks_or_grow_on_refresh(self):
+        self.window.store.clusters = lambda: [dict(id=cid, name=data["name"], enabled=True, server="https://synthetic.invalid", username="fixture") for cid, data in self.window.snapshot.items()]
         self.window.snapshot = {"c": {"name": "Production", "namespaces": {"ns": {
             "deployments": [self.deployment], "pods": [self.pod], "replica_sets": [{"metadata": {
                 "name": "app-rs", "uid": "rs", "ownerReferences": [{"controller": True, "kind": "Deployment", "name": "app", "uid": "d"}]}}],
@@ -544,19 +592,23 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
                             pos=QPoint(rect.center().x(), rect.top()+matrix.GROUP_HEIGHT+12))
             opened.assert_called_once_with("c", "pod", "ns", "app-pod", expected_uid=self.pod["metadata"]["uid"])
 
-    def test_settings_group_controls_above_list_and_general_below(self):
+    def test_settings_sections_keep_connection_controls_above_list(self):
         from PyQt5.QtWidgets import QPushButton, QWidget
         from quaber.resource_list import ResourceList
         def inspect(dialog):
             dialog.show()
+            dialog.sections.setCurrentRow(2)
             self.app.processEvents()
             clusters = dialog.findChild(QWidget, "settingsClusters")
             general = dialog.findChild(QWidget, "settingsGeneral")
             table = clusters.findChild(ResourceList)
             button = next(b for b in clusters.findChildren(QPushButton) if b.text().startswith("Добавить"))
             self.assertLess(button.mapTo(dialog, QPoint()).y(), table.mapTo(dialog, QPoint()).y())
-            self.assertLess(clusters.geometry().bottom(), general.geometry().top())
-            self.assertLess(abs(clusters.height()-general.height()), 8)
+            self.assertTrue(clusters.isVisible())
+            self.assertFalse(general.isVisible())
+            dialog.sections.setCurrentRow(0)
+            self.assertTrue(general.isVisible())
+            self.assertFalse(clusters.isVisible())
             dialog.close()
             dialog.deleteLater()
             return 0
@@ -583,6 +635,7 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
 
     def test_namespace_setting_also_controls_location_labels(self):
         scope = {"deployments": [self.deployment], "pods": [], "replica_sets": []}
+        self.window.store.clusters = lambda: [dict(id=cid, name=data["name"], enabled=True, server="https://synthetic.invalid", username="fixture") for cid, data in self.window.snapshot.items()]
         self.window.snapshot = {"c1": {"name": "One", "namespaces": {"ns-one": scope}},
                                 "c2": {"name": "Two", "namespaces": {"ns-two": scope}}}
         for show_names in (False, True):
@@ -666,7 +719,7 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
                 panel._apply_scale(copy.deepcopy(panel.resource), value)
                 self.wait()
             decision.assert_not_called()
-            self.api.scale.assert_called_once_with("c", "ns", "app", value, "d", "1")
+            self.assert_bound_call(self.api.scale,("c", "ns", "app", value, "d", "1"),'scale','deployment')
         self.api.scale.reset_mock()
         self.window.set_read_only(True)
         with patch("quaber.ui.confirm") as decision, patch("quaber.ui.error"):
@@ -678,6 +731,7 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
     def test_yaml_has_one_target_confirmation_with_optional_diff(self):
         import yaml
         panel = self.open_panel("deployment")
+        self.ready_yaml(panel)
         self.window.set_read_only(False)
         edited = copy.deepcopy(panel.resource)
         edited["spec"]["replicas"] = 3
@@ -691,7 +745,13 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
         decision.assert_called_once()
         self.assertIn("Production / ns / app", decision.call_args.kwargs["target"])
         self.assertIn("replicas: 3", decision.call_args.kwargs["details"])
-        self.api.replace.assert_called_once_with("c", "deployment", "ns", "app", edited, "1")
+        self.assertEqual(self.api.replace.call_count,1)
+        call = self.api.replace.call_args
+        self.assertEqual(call.args,("c", "deployment", "ns", "app", edited, "1"))
+        from quaber.write_guard import WritePermit, parameter_digest
+        self.assertIsInstance(call.kwargs['permit'],WritePermit)
+        self.assertEqual(call.kwargs['permit'].intent.identity,('c','deployment','ns','app','d'))
+        self.assertEqual(call.kwargs['permit'].intent.parameters,parameter_digest(edited))
 
     def test_both_pod_removal_modes_only_need_yes_or_no(self):
         from quaber.resource_actions import confirm_pod_removal
@@ -726,7 +786,7 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
         self.window.set_read_only(False)
         original_uid = panel.resource["metadata"]["uid"]
         queue = Deferred()
-        panel.background = queue
+        panel.background.background = queue
         for changed in ("uid", "readonly"):
             with patch("quaber.ui.confirm", return_value=True):
                 panel.restart()
@@ -784,6 +844,7 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
             self.window._resource_panel = panel
             panel.show()
             panel.tabs.setCurrentWidget(panel.yaml_editor)
+            self.ready_yaml(panel)
             self.app.processEvents()
             for timer in panel.findChildren(QTimer):
                 timer.stop()
@@ -805,10 +866,12 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
             self.assertNotEqual(draft, before)
             self.window.set_read_only(True)
             QTest.keyClick(editor, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
-            self.assertEqual(editor.toPlainText(), draft)
+            self.assertEqual(editor.toPlainText(), before)
+            self.assertFalse(editor.document().isModified())
+            self.assertFalse(editor.document().isUndoAvailable())
             editor.selectAll()
             QTest.keyClick(editor, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)
-            self.assertEqual(QApplication.clipboard().text(), draft)
+            self.assertEqual(QApplication.clipboard().text(), before)
             editor.document().setModified(False)
             panel.close()
             panel.deleteLater()
@@ -825,7 +888,7 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
         self.assertTrue(panel.terminal_timer.isActive())
         remaining = panel.terminal_timer.remainingTime()
         self.api.store.operation.side_effect = lambda *args, **kwargs: nullcontext()
-        self.api.proxy.execute.return_value = ("output", "")
+        self.api.execute_pod.return_value = ("output", "")
         with patch("quaber.ui.confirm", return_value=True) as decision:
             for command in ("date", "uptime"):
                 panel.console_input.setText(command)
@@ -833,7 +896,7 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
                 self.wait()
                 self.assertFalse(self.window.preferences["read_only"])
         decision.assert_not_called()
-        self.assertEqual(self.api.proxy.execute.call_count, 2)
+        self.assertEqual(self.api.execute_pod.call_count, 2)
         self.assertLess(panel.terminal_timer.remainingTime(), remaining)
         panel.terminal_timer.setInterval(35)
         panel.terminal_timer.start()
@@ -845,6 +908,7 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
 
     def test_leaving_terminal_tab_or_resource_immediately_relocks(self):
         panel = self.open_panel("pod")
+        self.ready_yaml(panel)
         panel.tabs.setCurrentWidget(panel.terminal_page)
         self.window.set_read_only(False)
         panel.tabs.setCurrentWidget(panel.yaml_editor)
@@ -869,7 +933,7 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
         with patch("quaber.ui.confirm") as decision, patch("quaber.ui.error"):
             panel.run_console()
         decision.assert_not_called()
-        self.api.proxy.execute.assert_not_called()
+        self.api.execute_pod.assert_not_called()
         self.assertEqual(panel.console_input.text(), "date")
         self.assertTrue(self.window.preferences["read_only"])
         self.assertEqual(panel.console_unlocked_until, 0)
@@ -878,7 +942,7 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
         panel = self.open_panel("deployment")
         self.window.set_read_only(False)
         queue = Deferred()
-        panel.background = queue
+        panel.background.background = queue
         operation = Mock()
         panel._mutate(operation, Mock())
         self.assertIsNotNone(self.window._write_operation)
@@ -897,14 +961,17 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
         self.assertFalse(self.window.preferences["read_only"])
 
     def test_optional_rbac_error_does_not_discard_current_core_scope(self):
+        from quaber.kubernetes import AggregateListForbidden
         from test_storage import CONFIG
         record = self.window.store.put_cluster("Fixture", "https://example.test:6443", "alice", CONFIG)
         self.api.namespaces.return_value = ["ns"]
         def optional(cid, kind, namespace):
             if kind == "statefulset":
                 raise PermissionError("fixture RBAC")
-            return []
+            return {'deployment':[self.deployment], 'pod':[self.pod],
+                    'replicaset':self.api.replica_sets.return_value}.get(kind, [])
         self.api.list_resources.side_effect = optional
+        self.api.all_namespace_resources.side_effect = AggregateListForbidden('fixture scoped-only access')
         self.window.refresh_matrix()
         self.wait()
         scope = self.window.snapshot[record["id"]]["namespaces"]["ns"]
@@ -915,6 +982,7 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
 
     def test_lock_shortcut_prevents_exec_and_preserves_input(self):
         panel = self.open_panel("pod")
+        self.ready_yaml(panel)
         self.window.set_read_only(False)
         self.assertFalse(panel.yaml_editor.editor.isReadOnly())
         panel.console_input.setText("date")
@@ -930,7 +998,7 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
         confirmation.assert_not_called()
         self.assertEqual(panel.console_input.text(), "date")
         self.assertEqual(panel.console_unlocked_until, 0)
-        self.api.proxy.execute.assert_not_called()
+        self.api.execute_pod.assert_not_called()
         panel.container.setCurrentText("sidecar")
         self.assertEqual(panel.console_container.currentText(), "app")
         self.wait()
@@ -1020,8 +1088,8 @@ class ShellUXTests(ShellFixture, unittest.TestCase):
             with patch("quaber.resource_actions.confirm_pod_removal", return_value="restart"):
                 bg.finish(self.pod)
             bg.finish(execute=True)
-            self.api.delete_pod.assert_called_once_with("c", "ns", "app-pod", self.identity[-1], "restart")
-            self.api.cache.invalidate.assert_called_once()
+            self.assert_bound_call(self.api.delete_pod,("c", "ns", "app-pod", self.identity[-1], "restart"),'delete','pod')
+            self.api.invalidate_resource.assert_called_once_with('c','pod','ns','app-pod')
             self.assertFalse(self.window._pod_operations)
             self.api.delete_pod.reset_mock()
             self.assertTrue(self.window.preferences["read_only"])

@@ -1,6 +1,8 @@
 import json
 import tempfile
 import unittest
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from quaber.storage import UserStore, sanitize_kubeconfig
@@ -28,6 +30,25 @@ contexts:
 
 
 class StoreTests(unittest.TestCase):
+    def test_preferences_are_consistent_during_background_replacements(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = UserStore(Path(temporary))
+            store.save_preferences({'sequence': 0, 'payload': '0'*4096})
+            barrier = threading.Barrier(2)
+            def writer():
+                barrier.wait(timeout=3)
+                for sequence in range(1, 81):
+                    store.save_preferences({'sequence':sequence, 'payload':str(sequence)*4096})
+            def reader():
+                barrier.wait(timeout=3)
+                for _ in range(160):
+                    snapshot = store.preferences()
+                    self.assertEqual(snapshot['payload'], str(snapshot['sequence'])*4096)
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                futures = [pool.submit(writer), pool.submit(reader)]
+                for future in futures:
+                    future.result(timeout=20)
+
     def test_password_is_opt_in_encrypted_portable_and_removable(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -101,19 +122,22 @@ class StoreTests(unittest.TestCase):
             self.assertNotEqual(store.clusters_file.read_bytes(), before)
 
     def test_delete_pod_checks_uid_and_controller(self):
+        from helpers_permits import bound_permit
         with tempfile.TemporaryDirectory() as temporary:
             store = UserStore(Path(temporary))
             cluster = store.put_cluster("One", "https://example.test:6443", "alice", CONFIG)
             class DummyProxy:
                 pass
             api = Kubernetes(store, DummyProxy())
-            pod = {"metadata": {"uid": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "ownerReferences": [{"controller": True}]}}
+            pod = {"metadata": {"uid": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", 'resourceVersion':'1', "ownerReferences": [{"controller": True}]}}
             api.resource = lambda *args: pod
             api.request = lambda *args: {}
             with self.assertRaisesRegex(RuntimeError, "изменился"):
-                api.delete_pod(cluster["id"], "default", "pod", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "restart")
+                api.delete_pod(cluster["id"], "default", "pod", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "restart", expected_version='1',permit=bound_permit(
+                    api,(cluster['id'],'pod','default','pod','bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'),'delete',{'mode':'restart','resourceVersion':'1'}))
             with self.assertRaisesRegex(ValueError, "Режим"):
-                api.delete_pod(cluster["id"], "default", "pod", pod["metadata"]["uid"], "delete")
+                api.delete_pod(cluster["id"], "default", "pod", pod["metadata"]["uid"], "delete", expected_version='1',permit=bound_permit(
+                    api,(cluster['id'],'pod','default','pod',pod['metadata']['uid']),'delete',{'mode':'delete','resourceVersion':'1'}))
 
 
 if __name__ == "__main__":

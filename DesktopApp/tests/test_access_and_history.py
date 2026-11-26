@@ -46,7 +46,10 @@ class AccessAndHistoryTests(unittest.TestCase):
         self.assertEqual(scope_access({})[0], "Не определён")
 
     def api(self):
-        api = Kubernetes.__new__(Kubernetes)
+        from quaber.request_policy import RequestPolicy
+        store = Mock()
+        store.clusters.return_value = [{'id': 'c', 'enabled': True}]
+        api = Kubernetes(store, Mock(), policy=RequestPolicy())
         api.request = Mock()
         api.namespaces = Mock(return_value=["team"])
         return api
@@ -57,7 +60,7 @@ class AccessAndHistoryTests(unittest.TestCase):
         self.assertEqual(api.access_summary("c")["level"], "Администратор")
         api.request.assert_called_once()
         api.request.side_effect = PermissionError("review forbidden")
-        self.assertEqual(api.access_summary("c")["level"], "Не определён")
+        self.assertEqual(api.access_summary("c", force=True)["level"], "Не определён")
 
     def test_namespace_access_summary_reports_scoped_rights(self):
         api = self.api()
@@ -71,10 +74,18 @@ class AccessAndHistoryTests(unittest.TestCase):
         self.assertTrue(all(call.args[2] == "POST" for call in api.request.call_args_list))
 
     def test_only_forbidden_writes_trigger_administrator_lock(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from quaber.request_policy import RequestPolicy
+        from v3_helpers import FakeClock
         store, proxy = Mock(), Mock()
         store.clusters.return_value = [{"id": "c", "name": "Fixture", "enabled": True}]
         proxy.url.return_value = "http://127.0.0.1"
         api = Kubernetes(store, proxy)
+        clock = FakeClock()
+        api.request_policy = RequestPolicy(clock=clock, wait=clock.advance)
+        from quaber.write_guard import WriteGuard
+        from quaber.request_policy import credentials_revision
+        guard = WriteGuard(lambda: True, lambda cid: credentials_revision(api.cluster(cid)), clock)
         api.access_denied = Mock()
         api.opener = Mock()
         for method, path, lock in (("GET", "/api/v1/pods", False),
@@ -82,8 +93,14 @@ class AccessAndHistoryTests(unittest.TestCase):
             ("PATCH", "/apis/apps/v1/namespaces/team/deployments/app", True)):
             api.opener.open.side_effect = urllib.error.HTTPError("http://local", 403, "Forbidden", {}, io.BytesIO(b"forbidden"))
             api.access_denied.reset_mock()
-            with self.assertRaises(PermissionError):
-                api.request("c", path, method, {} if method != "GET" else None)
+            payload = {'kind': 'SelfSubjectAccessReview', 'apiVersion': 'authorization.k8s.io/v1'} if method == 'POST' else {} if method != 'GET' else None
+            if method == 'PATCH':
+                payload = {'metadata': {'uid': 'u', 'resourceVersion': '1'}, 'spec': {'template': {
+                    'metadata': {'annotations': {'kubectl.kubernetes.io/restartedAt': '2026-11-18T00:00:00Z'}}}}}
+            permit = guard.issue(('c', 'deployment', 'team', 'app', 'u'), credentials_revision(api.cluster('c')), 'restart', authorized=True, parameters=None) if method == 'PATCH' else None
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                with self.assertRaises(PermissionError):
+                    pool.submit(api.request, "c", path, method, payload, permit=permit).result()
             self.assertEqual(api.access_denied.called, lock)
         self.assertTrue(server_forbidden("Error from server (Forbidden): pods/exec is forbidden"))
         self.assertFalse(server_forbidden("application: forbidden operation"))
@@ -169,7 +186,7 @@ class NextInterfaceTests(ShellFixture, unittest.TestCase):
         self.assertEqual({button.iconSize().width() for button in buttons}, {22})
         self.assertEqual(self.window.deploy_mode.parentWidget().objectName(), "refreshStrip")
         self.assertFalse(any(button.text() == "Только проблемы" for button in self.window.findChildren(QPushButton)))
-        self.assertIn("Перезапущенные", self.window.recent.text())
+        self.assertIn('Recently started', self.window.recent_label.text())
         with patch("quaber.ui.confirm", return_value=True):
             self.open_panel("deployment")
             self.window.shell_actions.mode.click()
@@ -187,11 +204,12 @@ class NextInterfaceTests(ShellFixture, unittest.TestCase):
         observations = []
         def inspect():
             dialog = QApplication.activeModalWidget()
+            dialog.sections.setCurrentRow(2)
             table = next(table for table in dialog.findChildren(ResourceList) if table.property("clusterSettings"))
-            if table.item(0, 6).text() == "Проверка…":
+            if table.item(0, 5).text() == "Проверка…":
                 QTimer.singleShot(10, inspect)
                 return
-            observations.append((table.item(0, 6).text(), table.topLevelItem(0).toolTip(6)))
+            observations.append((table.item(0, 5).text(), table.topLevelItem(0).toolTip(5)))
             dialog.accept()
         QTimer.singleShot(10, inspect)
         self.window.clusters_dialog()
@@ -201,9 +219,9 @@ class NextInterfaceTests(ShellFixture, unittest.TestCase):
         panel = self.open_panel("pod")
         panel.tabs.setCurrentWidget(panel.terminal_page)
         self.window.set_read_only(False)
-        panel.background = deferred = Deferred()
+        panel.background.background = deferred = Deferred()
         self.api.store.operation.return_value = nullcontext()
-        self.api.proxy.execute.side_effect = RuntimeError('Error from server (Forbidden): pods/exec is forbidden: User "reader" cannot create resource')
+        self.api.execute_pod.side_effect = RuntimeError('Error from server (Forbidden): pods/exec is forbidden: User "reader" cannot create resource')
         panel.console_input.setText("true")
         panel.run_console()
         deferred.finish(execute=True)

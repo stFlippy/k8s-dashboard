@@ -1,3 +1,4 @@
+from qt_helpers import label_text
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -27,14 +28,7 @@ class UITests(unittest.TestCase):
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
-        def cleanup():
-            # MainWindow now closes backend I/O asynchronously. A fixture must
-            # wait for finalization before deleting its Windows-open log files.
-            for worker in threading.enumerate():
-                if worker.name == "quaber-shutdown":
-                    worker.join(5)
-            self.temporary.cleanup()
-        self.addCleanup(cleanup)
+        self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.store = UserStore(self.root / "UserData")
         self.parent = QWidget()
@@ -50,13 +44,21 @@ class UITests(unittest.TestCase):
             QTest.qWait(10)
         self.assertTrue(condition(), "Qt callback did not finish")
 
+    def make_window(self):
+        from helpers_window import create_window
+        window = create_window(self,self.store,self.root)
+        window.show()
+        window.activateWindow()
+        self.app.processEvents()
+        return window
+
     def dialog(self, cluster=None):
         dialog = ClusterDialog(self.parent, self.store, self.root, cluster)
         if cluster is None:
             dialog.name.setText("Fixture")
             dialog.server.setText("https://example.test:6443")
-            dialog.username.setText("alice")
-            dialog.password.setText("fixture-private-password")
+            from helpers_accounts import select_account
+            select_account(dialog)
         dialog.kubectl_path.setText(str(self.client))
         self.addCleanup(dialog.deleteLater)
         return dialog
@@ -111,7 +113,8 @@ class UITests(unittest.TestCase):
 
     def test_save_prefills_password_and_opt_out_removes_it(self):
         dialog = self.dialog()
-        dialog.remember_password.setChecked(True)
+        from helpers_accounts import select_account
+        account = select_account(dialog, remember=True)
         with patch("quaber.ui.login", return_value=CONFIG):
             dialog.connect_cluster(True)
             self.wait_for(lambda: not dialog.busy)
@@ -122,9 +125,10 @@ class UITests(unittest.TestCase):
         self.assertEqual(self.store.saved_password(cluster), "fixture-private-password")
         self.assertNotIn("fixture-private-password", self.store.clusters_file.read_text())
         edit = self.dialog(cluster)
-        self.assertTrue(edit.remember_password.isChecked())
-        self.assertEqual(edit.password.text(), "fixture-private-password")
-        edit.remember_password.setChecked(False)
+        self.assertEqual(edit.account.currentData(), account['id'])
+        self.assertFalse(hasattr(edit, 'password'))
+        self.store.put_account('alice', 'alice', account_id=account['id'], remember_password=False)
+        edit.cluster = self.store.clusters()[0]
         with patch("quaber.ui.login", return_value=CONFIG):
             edit.connect_cluster(True)
             self.wait_for(lambda: not edit.busy)
@@ -132,14 +136,13 @@ class UITests(unittest.TestCase):
 
     def test_failed_check_reenables_form_and_does_not_save(self):
         dialog = self.dialog()
-        dialog.remember_password.setChecked(True)
         with patch("quaber.ui.login", side_effect=RuntimeError("Connection failed")):
             dialog.connect_cluster(False)
             self.wait_for(lambda: not dialog.busy)
         self.assertTrue(dialog.buttons.isEnabled())
         self.assertTrue(dialog.form_widget.isEnabled())
         self.assertEqual(self.store.clusters(), [])
-        self.assertEqual(dialog.password.text(), "")
+        self.assertFalse(hasattr(dialog, 'password'))
 
     def test_group_login_reuses_saved_password_and_each_cluster_client(self):
         self.parent.store, self.parent.app_dir = self.store, self.root
@@ -150,6 +153,8 @@ class UITests(unittest.TestCase):
         group = LoginGroupsDialog(self.parent, [{"username": "alice", "clusters": [first]}])
         self.addCleanup(group.deleteLater)
         self.assertEqual(group.passwords[0].text(), "saved-fixture-password")
+        self.assertFalse(group.remember_passwords[0].isChecked())
+        group.remember_passwords[0].setChecked(True)
         group.passwords[0].setText("updated-fixture-password")
         with patch("quaber.ui.login", return_value=CONFIG) as login:
             group.submit()
@@ -161,14 +166,14 @@ class UITests(unittest.TestCase):
         self.assertEqual(mixed.passwords[0].text(), "")
 
     def test_main_window_starts_with_isolated_empty_data(self):
-        window = MainWindow(self.store, self.root)
+        window = self.make_window()
         self.addCleanup(window.deleteLater)
         window.timer.stop()
         QTest.qWait(30)
         window.close()
 
     def test_left_navigation_theme_and_hideable_log(self):
-        window = MainWindow(self.store, self.root)
+        window = self.make_window()
         self.addCleanup(window.deleteLater)
         window.timer.stop()
         window.show()
@@ -202,7 +207,7 @@ class UITests(unittest.TestCase):
 
     def test_theme_is_available_in_settings_and_resource_lists_keep_identity(self):
         from quaber.resource_list import ResourceList
-        window = MainWindow(self.store, self.root)
+        window = self.make_window()
         self.addCleanup(window.deleteLater)
         window.timer.stop()
         QTest.qWait(30)
@@ -222,7 +227,7 @@ class UITests(unittest.TestCase):
 
     def test_view_color_covers_canvas_and_updates_each_tab(self):
         from quaber.view_tabs import blended_color, color_icon
-        window = MainWindow(self.store, self.root)
+        window = self.make_window()
         self.addCleanup(window.deleteLater)
         window.timer.stop()
         QTest.qWait(30)
@@ -252,7 +257,7 @@ class UITests(unittest.TestCase):
         self.assertEqual(bars[1].property("level"), "critical")
 
     def test_resource_panel_follows_workspace_when_log_and_sidebar_resize(self):
-        window = MainWindow(self.store, self.root)
+        window = self.make_window()
         self.addCleanup(window.deleteLater)
         window.timer.stop()
         window.show()
@@ -278,7 +283,7 @@ class UITests(unittest.TestCase):
         window.close()
 
     def test_saved_password_renews_automatically_without_form(self):
-        window = MainWindow(self.store, self.root)
+        window = self.make_window()
         self.addCleanup(window.deleteLater)
         window.timer.stop()
         QTest.qWait(30)
@@ -293,7 +298,7 @@ class UITests(unittest.TestCase):
         window.close()
 
     def test_missing_password_prompts_once_and_cancel_does_not_loop(self):
-        window = MainWindow(self.store, self.root)
+        window = self.make_window()
         self.addCleanup(window.deleteLater)
         window.timer.stop()
         QTest.qWait(30)
@@ -317,7 +322,10 @@ class UITests(unittest.TestCase):
         matrix.setColumnCount(3)
         matrix.setRowCount(30)
         matrix.setItem(0, 1, QTableWidgetItem("pod"))
-        matrix.item(0, 1).setData(Qt.ItemDataRole.UserRole, [{"status": {"phase": "Running"}}])
+        from quaber.matrix_presentation import PodVisual
+        matrix._cell_keys[(0, 1)] = ("c", "ns", "app")
+        matrix._cell_visuals[("c", "ns", "app")] = (PodVisual(
+            ("c", "pod", "ns", "pod", "uid"), "Running", "#43B694", False, False, "pod"),)
         matrix.sync_frozen()
         matrix.show()
         QTest.qWait(20)
@@ -423,22 +431,22 @@ class UITests(unittest.TestCase):
             release.set()
 
     def test_matrix_counters_respect_scope_but_include_hidden_statuses(self):
-        window = MainWindow(self.store, self.root)
+        window = self.make_window()
         self.addCleanup(window.deleteLater)
         self.addCleanup(window.close)
         window.timer.stop()
         QTest.qWait(30)
         deployments = [{"metadata": {"name": name, "uid": name}, "spec": {"replicas": 1}} for name in ("first", "second")]
         pods = [{"metadata": {"name": name+"-pod", "ownerReferences": [{"controller": True, "uid": name, "kind": "Deployment"}]}, "status": {"phase": "Running"}} for name in ("first", "second")]
+        window.store.clusters = lambda: [dict(id="cluster", name="Fixture", enabled=True)]
         window.snapshot = {"cluster": {"name": "Fixture", "namespaces": {"payments": {"deployments": deployments, "pods": pods, "replica_sets": []}}}}
         window.render_matrix()  # Discover objects before the operator hides an existing row.
         window.views.active["selectedDeployments"] = ["first"]
         window.render_matrix()
-        self.assertEqual(window.summary_label.text(), "1  Total")
+        self.assertEqual(label_text(window.summary_label), "1  Total Pods")
         self.assertEqual(window.status_filters["Running"].text(), "Running  1")
-        window.recent.setChecked(False)
         window.status_filters["Running"].setChecked(False)
-        self.assertEqual(window.summary_label.text(), "1  Total")
+        self.assertEqual(label_text(window.summary_label), "1  Total Pods")
         self.assertEqual(window.status_filters["Running"].text(), "Running  1")
         window.close()
 
@@ -464,13 +472,18 @@ class UITests(unittest.TestCase):
         self.assertEqual(panel.nav_deployment.currentData(), "checkout")
         self.assertEqual(panel.nav_pod.count(), 2)
         self.assertEqual(panel.log_view.fragment_label.text(), "Последние 1000 строк")
+        api.logs.assert_not_called()
+        panel.tabs.setCurrentWidget(panel.log_view)
+        self.wait_for(lambda: not self.parent.background.running)
         api.logs.assert_called_with("cluster", "payments", "checkout-a", "app", False, 1000)
         panel.tabs.setCurrentIndex(next(i for i in range(panel.tabs.count()) if panel.tabs.tabText(i) == "Логи"))
         QTest.qWait(30)
         scroll = panel.logs.verticalScrollBar()
         self.assertEqual(scroll.value(), scroll.maximum())
         QTest.keyClick(panel.logs, Qt.Key.Key_PageUp)
-        self.assertEqual(panel.log_timer.interval(), 5000)
+        from quaber.polling import poll_interval
+        self.assertEqual(poll_interval(panel.log_timer), 5000)
+        self.assertTrue(5000 <= panel.log_timer.interval() <= 6000)
         self.assertFalse(panel.follow_logs.isChecked())
         panel.all_logs.setChecked(True)
         self.wait_for(lambda: not self.parent.background.running)
@@ -496,7 +509,7 @@ class UITests(unittest.TestCase):
     def test_overlay_close_is_void_and_nested_cards_preserve_parent(self):
         import sys
         from PyQt5.QtWidgets import QMessageBox
-        window = MainWindow(self.store, self.root)
+        window = self.make_window()
         self.addCleanup(window.deleteLater)
         window.timer.stop()
         window.resize(1450, 900)
@@ -547,14 +560,14 @@ class UITests(unittest.TestCase):
             child._go_back()
             warning.assert_called_once()
         self.assertIs(window._resource_panel, parent)
-        self.assertEqual(parent.yaml_editor.toPlainText(), draft)
-        self.assertTrue(parent.yaml_editor.editor.document().isModified())
-        with patch("quaber.ui.QMessageBox.warning", return_value=QMessageBox.StandardButton.Cancel):
+        self.assertNotEqual(parent.yaml_editor.toPlainText(), draft)
+        self.assertFalse(parent.yaml_editor.editor.document().isModified())
+        with patch("quaber.ui.QMessageBox.warning") as warning:
             window.nav_buttons[2].click()
-        self.assertIs(window._resource_panel, parent)
-        self.assertEqual(window.tabs.currentIndex(), 0)
-        with patch("quaber.ui.QMessageBox.warning", return_value=QMessageBox.StandardButton.Discard):
-            window.close()
+        warning.assert_not_called()
+        self.assertIsNone(window._resource_panel)
+        self.assertEqual(window.tabs.currentIndex(), 2)
+        window.close()
 
     def test_editor_search_counts_and_wraps(self):
         editor = CodeEditor()
@@ -570,12 +583,14 @@ class UITests(unittest.TestCase):
         self.assertEqual(editor.numbers.toPlainText(), "1\n2\n3")
 
     def test_matrix_has_individual_pods_and_direct_click(self):
-        window = MainWindow(self.store, self.root)
+        window = self.make_window()
         self.addCleanup(window.deleteLater)
         window.timer.stop()
         QTest.qWait(30)
-        pod = {"metadata": {"name": "checkout-pod", "ownerReferences": [{"kind": "Deployment", "controller": True, "uid": "deployment"}]},
+        pod = {"metadata": {"name": "checkout-pod", "namespace": "payments", "uid": "33333333-3333-3333-3333-333333333333",
+                            "resourceVersion": "pod:1", "ownerReferences": [{"kind": "Deployment", "controller": True, "uid": "deployment"}]},
                "status": {"phase": "Running"}}
+        window.store.clusters = lambda: [dict(id="cluster", name="Fixture", enabled=True)]
         window.snapshot = {"cluster": {"name": "Development", "namespaces": {"payments": {
             "deployments": [{"metadata": {"name": "checkout", "uid": "deployment"}, "spec": {"replicas": 1}, "status": {"availableReplicas": 1}}],
             "pods": [pod], "replica_sets": []}}}}
@@ -584,12 +599,12 @@ class UITests(unittest.TestCase):
         QTest.qWait(30)
         self.assertIsInstance(window.matrix.horizontalHeader(), NamespaceHeader)
         cell = window.matrix.item(0, 1)
-        self.assertEqual(cell.data(Qt.ItemDataRole.UserRole)[0]["metadata"]["name"], "checkout-pod")
+        self.assertEqual(window.matrix.cell_visuals(0, 1)[0].identity[3], "checkout-pod")
         self.assertNotIn("Pod", cell.text())
         rect = window.matrix.visualItemRect(cell)
         with patch.object(window, "open_resource") as opened:
             QTest.mouseClick(window.matrix.viewport(), Qt.MouseButton.LeftButton, pos=QPoint(rect.center().x(), rect.top()+window.matrix.group_offset(0)+12))
-            opened.assert_called_once_with("cluster", "pod", "payments", "checkout-pod", expected_uid=None)
+            opened.assert_called_once_with("cluster", "pod", "payments", "checkout-pod", expected_uid=pod['metadata']['uid'])
         window.close()
 
     def test_deployment_pods_have_live_metrics_age_and_stable_identity(self):
@@ -606,11 +621,16 @@ class UITests(unittest.TestCase):
         api.replica_sets.return_value = []
         api.events.return_value = []
         api.metrics.return_value = {"available": True, "containers": [{"name": "app", "cpu": {"usageCores": .25, "limitCores": 1}, "memory": {"usageBytes": 128, "limitBytes": 256}}]}
+        api.metrics_many.return_value = {('checkout-original','pod-uid'): api.metrics.return_value}
         self.parent.open_resource = Mock()
         panel = ResourceDialog(self.parent, api, self.parent.background, "cluster", "deployment", "payments", "checkout", deployment)
         self.addCleanup(panel.deleteLater)
         self.wait_for(lambda: not self.parent.background.running)
         self.assertEqual(panel.pod_table.item(0, 2).text(), "10 мин")
+        api.metrics.assert_not_called()
+        panel.show()
+        panel.tabs.setCurrentIndex(next(i for i in range(panel.tabs.count()) if panel.tabs.tabText(i) == 'Pods'))
+        self.wait_for(lambda: not self.parent.background.running)
         self.assertEqual(panel.pod_table.item(0, 5).text(), "25%")
         self.assertEqual(panel.pod_table.item(0, 6).text(), "50%")
         self.assertIsInstance(panel.pod_table.itemDelegateForColumn(0), StatusDelegate)
@@ -624,12 +644,13 @@ class UITests(unittest.TestCase):
         panel.close()
 
     def test_vanished_pod_refreshes_without_raw_error_dialog(self):
-        window = MainWindow(self.store, self.root)
+        window = self.make_window()
         self.addCleanup(window.deleteLater)
         window.timer.stop()
         QTest.qWait(30)
+        cluster = self.store.put_cluster("Fixture", "https://example.test:6443", "alice", CONFIG)
         with patch.object(window.api, "resource", side_effect=ResourceNotFoundError("gone")), patch.object(window, "refresh") as refresh, patch("quaber.ui.error") as popup:
-            window.open_resource("cluster", "pod", "payments", "old-pod")
+            window.open_resource(cluster['id'], "pod", "payments", "old-pod")
             self.wait_for(lambda: not window.background.running)
             refresh.assert_called_once()
             popup.assert_not_called()

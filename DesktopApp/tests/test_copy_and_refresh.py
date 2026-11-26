@@ -13,7 +13,7 @@ from test_storage import CONFIG
 
 
 class CopyAndRefreshTests(ShellFixture, unittest.TestCase):
-    def test_new_scopes_are_selected_while_operator_exclusions_survive_reload(self):
+    def test_explicit_scopes_do_not_expand_on_discovery_and_exclusions_survive_reload(self):
         from quaber.views import MatrixViews
         views = self.window.views
         scopes = {"ClusterIds": {"a", "hidden"}, "Namespaces": {"ns", "hidden"}, "Deployments": {"app", "hidden"}}
@@ -24,17 +24,22 @@ class CopyAndRefreshTests(ShellFixture, unittest.TestCase):
         views = MatrixViews(views.preferences)
         views.observe_scopes({key: values | {"new"} for key, values in scopes.items()})
         for suffix in scopes:
-            self.assertIn("new", views.active["selected"+suffix])
+            self.assertNotIn("new", views.active["selected"+suffix])
             self.assertNotIn("hidden", views.active["selected"+suffix])
-        views.active["selectedDeployments"].remove("new")
-        views.observe_scopes({key: values | {"new"} for key, values in scopes.items()})
-        self.assertNotIn("new", views.active["selectedDeployments"])
+            self.assertIn("new", views.active["known"+suffix])
+        views.persist()
+        reloaded = MatrixViews(views.preferences)
+        self.assertEqual(reloaded.active, views.active)
+        reloaded.observe_scopes(scopes)
+        for suffix in scopes:
+            self.assertNotIn("new", reloaded.active["known"+suffix])
 
     def test_long_matrix_names_have_room_for_bold_wrapped_text_and_filter_order(self):
         from PyQt5.QtCore import QRect
         from PyQt5.QtGui import QFontMetrics
         resource = copy.deepcopy(self.deployment)
         resource["metadata"]["name"] = "kube-controller-manager-k8s-lab-1"
+        self.window.store.clusters = lambda: [dict(id="c", name="Lab", enabled=True)]
         self.window.snapshot = {"c": {"name": "Lab", "namespaces": {"ns": {"deployments": [resource], "pods": [], "replica_sets": []}}}}
         self.window.preferences["deployment_width"] = 150
         self.window.render_matrix()
@@ -45,7 +50,7 @@ class CopyAndRefreshTests(ShellFixture, unittest.TestCase):
         self.assertGreaterEqual(table.rowHeight(0)-table.group_offset(0), required)
         self.assertEqual([title for title, button in self.window.scope_buttons.values()], ["Кластер", "Namespace", "Deployment"])
 
-    def test_settings_copy_host_login_and_substrings_without_editing_connections(self):
+    def test_settings_copy_host_login_without_editing_connections(self):
         self.window.store.put_cluster("Lab", "https://example.test:6443", "admin@k8s.lab", CONFIG)
         self.api.access_summary.return_value = {"level": "Администратор", "detail": ""}
         observed = []
@@ -59,20 +64,6 @@ class CopyAndRefreshTests(ShellFixture, unittest.TestCase):
                 table.setFocus()
                 QTest.keyClick(table, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)
                 self.assertEqual(QApplication.clipboard().text(), value)
-                rect = table.visualRect(table.model().index(0, column))
-                QTest.mouseClick(table.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
-                QTest.mouseDClick(table.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
-                self.app.processEvents()
-                editor = next(editor for editor in table.findChildren(QLineEdit) if editor.isVisible())
-                self.assertTrue(editor.isReadOnly())
-                editor.setSelection(0, 5)
-                QTest.keyClick(editor, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)
-                self.assertEqual(QApplication.clipboard().text(), value[:5])
-                QTest.keyClicks(editor, "unwanted-change")
-                self.assertEqual(editor.text(), value)
-                QTest.keyClick(editor, Qt.Key.Key_Escape)
-                self.app.processEvents()
-                self.assertEqual(entry.text(column), value)
             def choose(menu, position):
                 for action in menu.actions():
                     action.trigger()
@@ -188,6 +179,7 @@ class CopyAndRefreshTests(ShellFixture, unittest.TestCase):
         self.assertEqual(table.columnWidth(0), new_width)
 
     def test_matrix_search_filters_workload_names_without_matching_child_pod_names(self):
+        self.window.store.clusters = lambda: [dict(id="c", name="Lab", enabled=True)]
         self.window.snapshot = {"c": {"name": "Lab", "namespaces": {"ns": {
             "deployments": [self.deployment], "pods": [self.pod], "replica_sets": [
                 {"metadata": {"uid": "rs", "ownerReferences": [{"kind": "Deployment", "uid": "d", "controller": True}]}}]}}}}

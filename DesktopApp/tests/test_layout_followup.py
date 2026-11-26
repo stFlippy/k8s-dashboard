@@ -1,4 +1,4 @@
-"""Matrix sizing, resource layouts and a single delayed scale after arrow clicks."""
+"""Matrix sizing, resource layouts and explicit replica draft application."""
 import copy
 import unittest
 from unittest.mock import Mock, patch
@@ -16,6 +16,7 @@ from qt_helpers import drag_move
 
 class LayoutFollowupTests(ShellFixture, unittest.TestCase):
     def matrix(self):
+        self.window.store.clusters = lambda: [dict(id=cid, name=data["name"], enabled=True, server="https://synthetic.invalid", username="fixture") for cid, data in self.window.snapshot.items()]
         self.window.snapshot = {"c": {"name": "Production", "namespaces": {
             "ns": {"deployments": [self.deployment], "pods": [self.pod], "replica_sets": []},
             "other": {"deployments": [self.deployment], "pods": [], "replica_sets": []}}}}
@@ -92,7 +93,9 @@ class LayoutFollowupTests(ShellFixture, unittest.TestCase):
         self.assertTrue(panel.yaml_reload.isEnabled())
         self.assertTrue(panel.yaml_reload.property("primary"))
         self.assertFalse(panel.yaml_notice.isHidden())
+        self.deployment = changed
         panel.reload_yaml()
+        self.wait()
         self.assertFalse(panel.yaml_reload.isEnabled())
         self.assertFalse(panel.yaml_reload.property("primary"))
         self.assertTrue(panel.yaml_notice.isHidden())
@@ -121,6 +124,7 @@ class LayoutFollowupTests(ShellFixture, unittest.TestCase):
         panel = self.open_panel("deployment")
         table = panel.pod_table
         panel.tabs.setCurrentWidget(table.parentWidget())
+        self.wait()
         table.setRowCount(2)
         for row in range(2):
             for column, value in enumerate(("Running", f"pod-{row}", "1 мин", "10.0.0.1", "0", "0%", "3%")):
@@ -174,13 +178,17 @@ class ReplicaBatchTests(ShellFixture, unittest.TestCase):
     def setUp(self):
         super().setUp()
         self.panel = self.open_panel("deployment")
+        self.ready_yaml(self.panel)
+        self.panel.tabs.setCurrentIndex(0)
         self.actual = copy.deepcopy(self.panel.resource)
         self.actual["spec"]["replicas"] = 3
         self.panel._adopt_live(copy.deepcopy(self.actual))
-        self.panel.background = self.deferred = Deferred()
+        self.panel.background.background = self.deferred = Deferred()
         self.panel.reload_deployment_pods = Mock()
         self.api.resource.side_effect = lambda *args: copy.deepcopy(self.actual)
-        def scale(cid, namespace, name, value, uid, version):
+        def scale(cid, namespace, name, value, uid, version, *, permit):
+            permit.check((cid, 'deployment', namespace, name, uid), 'scale')
+            permit.check_parameters({'replicas': value, 'resourceVersion': version})
             self.assertEqual((cid, namespace, name, uid, version), ("c", "ns", "app", "d", self.actual["metadata"]["resourceVersion"]))
             self.actual["spec"]["replicas"] = value
             self.actual["metadata"]["resourceVersion"] = str(int(version)+1)
@@ -192,7 +200,8 @@ class ReplicaBatchTests(ShellFixture, unittest.TestCase):
         QTest.mouseClick(self.panel.replica_up if delta > 0 else self.panel.replica_down, Qt.MouseButton.LeftButton)
 
     def commit(self):
-        self.panel._commit_scale_draft()
+        with patch('quaber.ui.confirm', return_value=True):
+            self.panel.scale_apply.click()
         self.assertEqual(len(self.deferred.jobs), 1)
         self.deferred.finish(execute=True)
 
@@ -214,27 +223,31 @@ class ReplicaBatchTests(ShellFixture, unittest.TestCase):
         self.commit()
         self.assertEqual([call.args[3] for call in self.api.scale.call_args_list], [0, 5])
 
-    def test_five_up_two_down_resets_timer_and_sends_one_net_change(self):
+    def test_five_up_two_down_keep_draft_and_apply_one_net_change(self):
         for _ in range(5):
             self.click(1)
         QTest.qWait(250)
-        self.assertLess(self.panel.scale_delay_timer.remainingTime(), 4900)
+        self.assertFalse(self.panel.scale_delay_timer.isActive())
         self.click(-1)
         self.click(-1)
-        self.assertGreater(self.panel.scale_delay_timer.remainingTime(), 4800)
-        self.assertEqual(self.panel.scale_delay_timer.interval(), 5000)
+        self.assertFalse(self.panel.scale_delay_timer.isActive())
+        self.assertFalse(self.panel.scale_countdown_timer.isActive())
         self.assertIn("3 → 6", self.panel.scale_apply.text())
         self.assertEqual(self.deferred.jobs, [])
         self.api.scale.assert_not_called()
         self.commit()
         self.assertEqual([call.args[3] for call in self.api.scale.call_args_list], [6])
 
-    def test_timer_sends_nothing_early_and_dispatches_once_when_due(self):
+    def test_even_expired_legacy_timer_sends_nothing_until_explicit_apply(self):
         self.click(1)
         QTest.qWait(100)
         self.assertEqual(self.deferred.jobs, [])
         self.panel.scale_delay_timer.start(30)
         QTest.qWait(90)
+        self.assertEqual(len(self.deferred.jobs), 0)
+        self.assertFalse(self.panel.pending_operation)
+        self.api.scale.assert_not_called()
+        self.panel.scale_apply.click()
         self.assertEqual(len(self.deferred.jobs), 1)
         self.assertTrue(self.panel.pending_operation)
         self.assertFalse(self.panel.replica_up.isEnabled())
@@ -260,19 +273,16 @@ class ReplicaBatchTests(ShellFixture, unittest.TestCase):
         self.assertTrue(self.window.preferences["read_only"])
         self.api.scale.assert_not_called()
 
-    def test_status_only_version_change_uses_fresh_version_but_concurrent_scale_is_rejected(self):
+    def test_status_only_version_change_requires_review_and_keeps_draft(self):
         self.click(1)
         self.actual["metadata"]["resourceVersion"] = "2"
-        self.commit()
-        self.api.scale.assert_called_once_with("c", "ns", "app", 4, "d", "2")
-        self.window.set_read_only(False)
-        self.click(1)
-        self.actual["spec"]["replicas"] = 7
         self.panel._commit_scale_draft()
         with patch("quaber.ui.error") as warning:
             self.deferred.finish(execute=True)
         warning.assert_called_once()
-        self.assertEqual(self.api.scale.call_count, 1)
+        self.api.scale.assert_not_called()
+        self.assertEqual(self.panel._scale_snapshot['metadata']['resourceVersion'], '1')
+        self.assertEqual(self.panel._scaling_target, 4)
         self.assertTrue(self.window.preferences["read_only"])
 
     def test_net_zero_and_changed_target_do_not_write(self):
@@ -296,10 +306,11 @@ class ReplicaBatchTests(ShellFixture, unittest.TestCase):
             self.deferred.finish(execute=True)
         self.api.scale.assert_not_called()
         self.assertEqual(self.panel.restart_button.text(), "Restart rollout")
+        self.panel._cancel_scale_draft()
         self.window.set_read_only(False)
         self.api.restart.return_value = copy.deepcopy(self.panel.resource)
         with patch("quaber.ui.confirm", return_value=True):
             self.panel.restart_button.click()
             self.deferred.finish(execute=True)
-        self.api.restart.assert_called_once_with("c", "ns", "app", "d", "1")
+        self.assert_bound_call(self.api.restart,("c", "ns", "app", "d", "1"),'restart','deployment')
         self.assertTrue(self.window.preferences["read_only"])

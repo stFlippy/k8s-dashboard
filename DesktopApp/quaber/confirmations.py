@@ -1,7 +1,6 @@
 """One explicit target and one decision for a resource mutation."""
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QFrame,
-                            QLabel, QSizePolicy, QVBoxLayout)
+from PyQt5.QtWidgets import QDialog, QDialogButtonBox, QFrame, QLabel, QSizePolicy, QVBoxLayout
 
 from .themes import write_background
 from .diff_view import DiffView
@@ -74,16 +73,19 @@ class ResourceConfirmation(QDialog):
             self.access_status.hide()
             return
         readonly = self._access_expired()
-        remaining = max(0, self.controller.shell_actions.idle_timer.remainingTime())
+        actions = self.controller.shell_actions
+        remaining = actions.admin_time_remaining()
         self.access_status.setText("Доступ истёк. Продлите режим администратора для применения или отмените. Черновик сохранён." if readonly else
+                                   'Редактирование YAML: таймер администратора приостановлен.' if actions.yaml_editing() else
                                    f"Режим администратора: {(remaining+999)//1000} сек")
+        self.renew.setVisible(self._requires_access and not actions.yaml_editing())
 
     def _renew_access(self):
         if self._access_expired():
             self.controller.set_read_only(True)
             self.controller.shell_actions.toggle_mode()
         else:
-            self.controller.shell_actions.idle_timer.start()
+            self.controller.shell_actions.sync_admin_timer(activity=True)
         self._update_access()
 
     def _accept_with_access(self):
@@ -95,7 +97,7 @@ class ResourceConfirmation(QDialog):
 
     def _access_expired(self):
         return (self.controller.preferences.get("read_only", True)
-                or self.controller.shell_actions.idle_timer.remainingTime() <= 0)
+                or self.controller.shell_actions.admin_time_remaining() <= 0)
 
 
 def confirm_change(parent, title, target, message, details=None):

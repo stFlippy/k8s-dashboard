@@ -48,7 +48,9 @@ class ReviewTests(unittest.TestCase):
 
     def window(self):
         # Avoid automatic login against the fixture endpoint.
-        with patch("quaber.ui.locate_kubectl", return_value=Path("fixture.exe")):
+        with patch("quaber.ui.locate_kubectl", return_value=Path("fixture.exe")), \
+             patch.object(MainWindow,'_prompt_expired_login'), \
+             patch.object(MainWindow,'_load_initial_matrix'):
             window = MainWindow(self.store, self.root)
         window.timer.stop()
         window.auth_timer.stop()
@@ -97,30 +99,40 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(self.store.clusters()[0], updated)
 
     def test_scale_and_restart_reject_recreated_deployment(self):
+        from helpers_permits import bound_permit
         self.api.resource = Mock(return_value={"metadata": {"uid": "replacement", "resourceVersion": "2"}})
         self.api.request = Mock()
         for action, args in ((self.api.scale, (2, "original", "1")), (self.api.restart, ("original", "1"))):
+            operation = 'scale' if len(args) == 3 else 'restart'
+            permit = bound_permit(self.api,(self.cluster['id'],'deployment','ns','deployment','original'),operation,
+                                  {'replicas':2,'resourceVersion':'1'} if operation=='scale' else None)
             with self.assertRaises(RuntimeError):
-                action(self.cluster["id"], "ns", "deployment", *args)
+                action(self.cluster["id"], "ns", "deployment", *args, permit=permit)
         self.api.request.assert_not_called()
 
     def test_eviction_honors_pdb_and_never_falls_back_to_delete(self):
+        from helpers_permits import bound_permit
         uid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-        self.api.resource = Mock(return_value={"metadata": {"uid": uid, "ownerReferences": [{"controller": True, "kind": "Job"}]}})
+        self.api.resource = Mock(return_value={"metadata": {"uid": uid, 'resourceVersion':'1', "ownerReferences": [{"controller": True, "kind": "Job"}]}})
         self.api.request = Mock(side_effect=RuntimeError("PDB rejected"))
         with self.assertRaises(RuntimeError):
-            self.api.delete_pod(self.cluster["id"], "ns", "pod", uid, "restart")
+            self.api.delete_pod(self.cluster["id"], "ns", "pod", uid, "restart", expected_version='1',permit=bound_permit(
+                self.api,(self.cluster['id'],'pod','ns','pod',uid),'delete',{'mode':'restart','resourceVersion':'1'}))
         call = self.api.request.call_args
         self.assertTrue(call.args[1].endswith("/eviction"))
         self.assertEqual(call.args[2], "POST")
         self.assertEqual(call.args[3]["deleteOptions"]["preconditions"]["uid"], uid)
+        self.assertEqual(call.args[3]['deleteOptions']['preconditions']['resourceVersion'],'1')
         self.assertEqual(self.api.request.call_count, 1)
         self.assertEqual([r["phase"] for r in self.store.recent_audit()], ["intent", "unknown"])
 
     def test_scale_uses_scale_subresource_dryrun_and_correlated_audit(self):
+        from helpers_permits import bound_permit
+        self.api.scaling_policy = Mock(return_value={'known': True, 'controllers': []})
         self.api.resource = Mock(return_value={"metadata": {"uid": "uid", "resourceVersion": "1"}, "spec": {"replicas": 3}})
         self.api.request = Mock(return_value={})
-        self.api.scale(self.cluster["id"], "ns", "deployment", 0, "uid", "1")
+        self.api.scale(self.cluster["id"], "ns", "deployment", 0, "uid", "1", permit=bound_permit(
+            self.api,(self.cluster['id'],'deployment','ns','deployment','uid'),'scale',{'replicas':0,'resourceVersion':'1'}))
         self.assertTrue(self.api.request.call_args_list[0].args[1].endswith("/scale?dryRun=All"))
         self.assertTrue(self.api.request.call_args_list[1].args[1].endswith("/scale"))
         records = self.store.recent_audit()
@@ -212,9 +224,9 @@ class ReviewTests(unittest.TestCase):
     def test_cancel_cluster_clears_password_and_settings_do_not_accumulate(self):
         window = self.window()
         dialog = ClusterDialog(window, self.store, self.root, self.cluster)
-        self.assertTrue(dialog.password.text())
+        self.assertEqual(dialog.account.currentData(), self.cluster['accountId'])
         dialog.reject()
-        self.assertEqual(dialog.password.text(), "")
+        self.assertFalse(hasattr(dialog, 'password'))
         dialog.deleteLater()
         for _ in range(3):
             QTimer.singleShot(10, lambda: next(d for d in window.findChildren(QDialog) if d.isVisible()).reject())
@@ -262,8 +274,11 @@ class ReviewTests(unittest.TestCase):
 
     def test_navigation_failure_restores_actual_target_without_retry_loop(self):
         window = self.window()
+        window.show()
+        window.activateWindow()
+        self.app.processEvents()
         api = Mock()
-        api.cluster.return_value = {"name": "A"}
+        api.cluster.return_value = copy.deepcopy(self.cluster)
         api.namespaces.return_value = ["ns"]
         api.deployments.return_value = [{"metadata": {"name": "deployment", "uid": "uid"}}]
         api.replica_sets.return_value = []
@@ -334,22 +349,30 @@ class ReviewTests(unittest.TestCase):
         from snapshot import create_snapshot
         import zipfile
         (self.root / "main.py").write_text("# fixture")
+        for name in ('Builds', 'reports', 'dumps'):
+            directory = self.root / name
+            directory.mkdir()
+            (directory / 'obsolete.py').write_text('# generated/obsolete, not application source')
         archive = create_snapshot(self.root)
         with zipfile.ZipFile(archive) as source:
             self.assertEqual(source.namelist(), ["main.py"])
 
     def test_connection_response_is_bounded_without_changing_transport(self):
         from quaber.kubectl import test_connection
+        from concurrent.futures import ThreadPoolExecutor
         response = Mock()
         response.__enter__ = Mock(return_value=response)
         response.__exit__ = Mock(return_value=False)
+        response.status = 200
         response.read.return_value = b"x"*(4*1024*1024+1)
         opener = Mock()
         opener.open.return_value = response
         manager = Mock()
         manager.url.return_value = "http://127.0.0.1:1234/prefix"
-        with patch("quaber.kubectl.ProxyManager", return_value=manager), patch("quaber.kubectl.urllib.request.build_opener", return_value=opener):
+        with patch("quaber.kubectl.ProxyManager", return_value=manager), patch("quaber.kubernetes.urllib.request.build_opener", return_value=opener):
             with self.assertRaises(ValueError):
-                test_connection(Path("fixture.exe"), self.store, self.cluster["server"], CONFIG)
-        response.read.assert_called_once_with(4*1024*1024+1)
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    pool.submit(test_connection, Path("fixture.exe"), self.store, self.cluster["server"], CONFIG).result()
+        self.assertEqual(response.read.call_count, 4)
+        self.assertTrue(all(call.args[0] <= 65536 for call in response.read.call_args_list))
         manager.close.assert_called_once()

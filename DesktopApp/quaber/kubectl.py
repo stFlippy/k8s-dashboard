@@ -10,8 +10,6 @@ import subprocess
 import tempfile
 import threading
 import time
-import json
-import urllib.request
 import uuid
 import logging
 from dataclasses import dataclass
@@ -156,17 +154,34 @@ class ProxyManager:
         self.executable, self.store = executable, store
         self._proxies: dict[str, Proxy] = {}
         self._lock = threading.RLock()
+        self._connection_locks = {}
+
+    def _connection_lock(self, identifier):
+        with self._lock:
+            return self._connection_locks.setdefault(identifier, threading.RLock())
 
     def close(self, cluster_id: str | None = None) -> None:
-        with self._lock:
-            ids = [cluster_id] if cluster_id else list(self._proxies)
-            for item in ids:
-                proxy = self._proxies.pop(item, None)
-                if proxy:
-                    if proxy.idle_timer:
-                        proxy.idle_timer.cancel()
-                    self._stop(proxy.process, proxy.readers)
-                    proxy.temporary.cleanup()
+        if cluster_id is None:
+            with self._lock:
+                ids = list(self._connection_locks)
+            for identifier in ids:
+                self.close(identifier)
+            return
+        with self._connection_lock(cluster_id):
+            with self._lock:
+                proxy = self._proxies.pop(cluster_id, None)
+            if proxy:
+                if proxy.idle_timer:
+                    proxy.idle_timer.cancel()
+                self._stop(proxy.process, proxy.readers)
+                proxy.temporary.cleanup()
+
+    def close_disabled(self, cluster_id):
+        """A delayed settings callback must not close a newly enabled proxy."""
+        with self._connection_lock(cluster_id):
+            current = next((c for c in self.store.clusters() if c['id'] == cluster_id), None)
+            if current is None or not current.get('enabled'):
+                self.close(cluster_id)
 
     @staticmethod
     def _stop(process, readers):
@@ -188,11 +203,25 @@ class ProxyManager:
 
     def _touch(self, cluster_id: str, proxy: Proxy) -> None:
         proxy.last_used = time.monotonic()
-        if proxy.idle_timer:
-            proxy.idle_timer.cancel()
-        proxy.idle_timer = threading.Timer(900, lambda: self.close(cluster_id))
+        if proxy.idle_timer is None:
+            self._arm_expiry(cluster_id, proxy, 900)
+
+    def _arm_expiry(self, cluster_id, proxy, delay):
+        proxy.idle_timer = threading.Timer(delay, lambda: self._expire(cluster_id, proxy))
         proxy.idle_timer.daemon = True
         proxy.idle_timer.start()
+
+    def _expire(self, cluster_id, proxy):
+        with self._connection_lock(cluster_id):
+            with self._lock:
+                if self._proxies.get(cluster_id) is not proxy:
+                    return
+            proxy.idle_timer = None
+            remaining = 900 - (time.monotonic() - proxy.last_used)
+            if remaining > 0:
+                self._arm_expiry(cluster_id, proxy, remaining)
+            else:
+                self.close(cluster_id)
 
     def url(self, cluster: dict) -> str:
         executable = self.executable_for(cluster)
@@ -200,8 +229,9 @@ class ProxyManager:
             raise ValueError(f"Кластер {cluster['name']} отключён.")
         credential = self.store.decrypt(cluster["encryptedKubeconfig"])
         fingerprint = int.from_bytes(hashlib.sha256((str(executable) + "\0" + credential).encode()).digest(), "big")
-        with self._lock:
-            proxy = self._proxies.get(cluster["id"])
+        with self._connection_lock(cluster["id"]):
+            with self._lock:
+                proxy = self._proxies.get(cluster["id"])
             if proxy and (proxy.process.poll() is not None or proxy.credential_hash != fingerprint or time.monotonic() - proxy.last_used > 900):
                 self.close(cluster["id"])
                 proxy = None
@@ -252,7 +282,8 @@ class ProxyManager:
                     match = re.search(r"Starting to serve on 127\.0\.0\.1:(\d+)", line)
                     if match:
                         proxy = Proxy(process, temporary, f"http://127.0.0.1:{match.group(1)}{prefix}", time.monotonic(), fingerprint, readers=readers)
-                        self._proxies[cluster["id"]] = proxy
+                        with self._lock:
+                            self._proxies[cluster["id"]] = proxy
                         self._touch(cluster["id"], proxy)
                         return proxy.base_url
                 raise TimeoutError("kubectl proxy не запустился за 15 секунд.")
@@ -283,20 +314,22 @@ class ProxyManager:
             return stdout, stderr
 
 
-def test_connection(executable: Path, store: UserStore, server: str, kubeconfig: str) -> int:
-    """Exercise the same proxy path without saving a candidate cluster."""
+def test_connection(executable: Path, store: UserStore, server: str, kubeconfig: str, *, transport_mode='proxy') -> int:
+    """Exercise the selected transport without saving a candidate cluster."""
     proxy = ProxyManager(executable, store)
     temporary = {"id": str(uuid.uuid4()), "name": "candidate", "enabled": True,
                  "server": server, "encryptedKubeconfig": store.encrypt(kubeconfig)}
+    api = None
     try:
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        with opener.open(proxy.url(temporary) + "/api/v1/namespaces", timeout=15) as response:
-            body = response.read(4 * 1024 * 1024 + 1)
-            if len(body) > 4 * 1024 * 1024:
-                raise ValueError("Ответ проверки подключения превышает 4 МиБ.")
-            result = json.loads(body)
-        if not isinstance(result, dict) or not isinstance(result.get("items"), list):
-            raise ValueError("Kubernetes вернул некорректный список namespaces.")
-        return len(result["items"])
+        from .kubernetes import Kubernetes
+        from .authorization import AuthorizationRequired
+        from types import SimpleNamespace
+        def rejected(*args):
+            raise AuthorizationRequired('Проверка подключения отклонена. Проверьте учётные данные.')
+        api = Kubernetes(store, proxy, authorization=SimpleNamespace(renew=rejected, block=lambda *args: None))
+        api.set_transport_mode(transport_mode)
+        api.cluster = lambda identifier: temporary
+        return len(api.namespaces(temporary['id']))
     finally:
+        if api is not None: api.close()
         proxy.close()

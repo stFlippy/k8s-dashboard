@@ -45,12 +45,14 @@ class ResourceReviewTests(ShellFixture, unittest.TestCase):
         panel = self.open_panel('deployment')
         self.window.set_read_only(False)
         panel.scale_by(1)
-        self.assertIn('Apply (5 сек)', panel.scale_apply.text())
+        self.assertIn('1 → 2', panel.scale_apply.text())
+        self.assertFalse(panel.scale_delay_timer.isActive())
+        self.api.scale.assert_not_called()
         panel.scale_cancel.click()
         self.assertTrue(self.window.preferences['read_only'])
         self.assertIsNone(panel._scale_snapshot)
         self.api.scale.assert_not_called()
-        panel.background = deferred = Deferred()
+        panel.background.background = deferred = Deferred()
         self.window.set_read_only(False)
         panel.scale_by(1)
         panel.scale_apply.click()
@@ -62,9 +64,9 @@ class ResourceReviewTests(ShellFixture, unittest.TestCase):
         deferred.finish(execute=True)
         self.assertTrue(self.window.preferences['read_only'])
 
-    def test_review_remains_open_when_access_expires_and_keeps_yaml_draft(self):
+    def test_review_remains_open_when_access_is_revoked_and_discards_yaml_draft(self):
         panel = self.open_panel('deployment')
-        panel.tabs.setCurrentWidget(panel.yaml_editor)
+        self.ready_yaml(panel)
         self.window.set_read_only(False)
         panel.yaml_editor.editor.insertPlainText('# draft\n')
         draft = panel.yaml_editor.toPlainText()
@@ -78,10 +80,10 @@ class ResourceReviewTests(ShellFixture, unittest.TestCase):
         dialog.buttons.button(QDialogButtonBox.StandardButton.Yes).click()
         self.assertTrue(dialog.isVisible())
         self.assertIn('Продлите', dialog.access_status.text())
-        self.assertEqual(panel.yaml_editor.toPlainText(), draft)
-        self.window.set_read_only(False)
-        dialog.buttons.button(QDialogButtonBox.StandardButton.Yes).click()
-        self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+        self.assertNotEqual(panel.yaml_editor.toPlainText(), draft)
+        self.assertFalse(panel.yaml_editor.editor.document().isModified())
+        self.assertFalse(panel.yaml_editor.editor.document().isUndoAvailable())
+        dialog.reject()
 
     def test_journal_search_wraps_and_keyboard_search_focuses_field(self):
         self.window.navigate_workspace(self.window.tabs.indexOf(self.window.log_panel))

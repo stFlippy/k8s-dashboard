@@ -6,6 +6,7 @@ from unittest.mock import Mock
 
 from quaber.kubernetes import Kubernetes, LogTooLarge
 from quaber.storage import UserStore
+from quaber.request_policy import RequestPolicy
 from test_storage import CONFIG
 
 
@@ -39,7 +40,7 @@ class LogDownloadTests(unittest.TestCase):
         self.cluster = self.store.put_cluster("Fixture", "https://example.test:6443", "alice", CONFIG)
         proxy = Mock()
         proxy.url.return_value = "http://127.0.0.1:1234/prefix"
-        self.api = Kubernetes(self.store, proxy)
+        self.api = Kubernetes(self.store, proxy, policy=RequestPolicy())
         self.api.opener = Mock()
 
     def test_download_streams_more_than_display_limit_in_small_chunks(self):

@@ -1,10 +1,11 @@
 """Application journal page, independent of cluster Terminal output."""
 from pathlib import Path
-from PyQt5.QtCore import Qt, QTimer, pyqtSlot
-from PyQt5.QtGui import QTextCursor, QTextDocument
+import json
+from PyQt5.QtCore import QTimer, pyqtSlot
+from PyQt5.QtGui import QTextCursor, QTextDocument, QPalette, QColor
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox,
                             QPlainTextEdit, QApplication, QFileDialog, QMessageBox, QLineEdit)
-from .themes import code_font
+from .themes import code_font, theme
 
 
 class LogPanel(QWidget):
@@ -20,6 +21,7 @@ class LogPanel(QWidget):
         row.setContentsMargins(12, 3, 8, 3)
         row.addWidget(QLabel("ЖУРНАЛ ПРИЛОЖЕНИЯ"))
         self.search_field = QLineEdit()
+        self.search_field.setObjectName('applicationLogSearch')
         self.search_field.setPlaceholderText("Поиск в журнале…")
         self.search_field.setClearButtonEnabled(True)
         self.search_field.textChanged.connect(lambda: self.find_next(restart=True))
@@ -39,6 +41,10 @@ class LogPanel(QWidget):
         button = QPushButton("Сохранить…")
         button.clicked.connect(self.export)
         row.addWidget(button)
+        diagnostics = QPushButton('Диагностика…')
+        diagnostics.setToolTip('Сохранить локальные счётчики запросов и кэша без обращения к кластерам.')
+        diagnostics.clicked.connect(self.export_diagnostics)
+        row.addWidget(diagnostics)
         layout.addWidget(bar)
         self.output = QPlainTextEdit()
         self.output.setObjectName("applicationLog")
@@ -48,6 +54,36 @@ class LogPanel(QWidget):
         self.output.setFont(code_font())
         layout.addWidget(self.output, 1)
         self.setMinimumHeight(100)
+        self.apply_theme(getattr(parent, 'preferences', {}).get('theme') == 'light')
+
+    def apply_theme(self, light):
+        palette = self.search_field.palette()
+        color = QColor(theme(light)['muted'])
+        for group in (QPalette.Active, QPalette.Inactive, QPalette.Disabled):
+            palette.setColor(group, QPalette.PlaceholderText, color)
+        self.search_field.setPalette(palette)
+
+    def export_diagnostics(self):
+        window = self.window()
+        api = getattr(window, 'api', None)
+        policy = getattr(api, 'request_policy', None)
+        data = {'requests': policy.diagnostics() if policy is not None else {}}
+        cache = getattr(api, 'cache', None)
+        if cache is not None:
+            with cache.lock:
+                data['cache'] = dict(cache.stats, entries=len(cache.entries), active=len(cache.active),
+                                     bytes=sum(cache.weights.values()))
+        controller = getattr(window, 'monitoring', None)
+        if controller is not None:
+            with controller.policy.lock:
+                data['monitoring'] = {'state': controller.policy.state, 'epoch': controller.policy.epoch,
+                    'reasons': sorted(controller.policy.reasons), 'idle_minutes': controller.policy.minutes}
+        path, _ = QFileDialog.getSaveFileName(self, 'Сохранить диагностику', 'quaber-diagnostics.json', 'JSON (*.json)')
+        if path:
+            try:
+                Path(path).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+            except OSError as exc:
+                QMessageBox.warning(self, 'Диагностика', str(exc))
 
     def showEvent(self, event):
         super().showEvent(event)

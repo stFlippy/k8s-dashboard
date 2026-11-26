@@ -20,7 +20,7 @@ def transform(data, decrypt=False):
                          ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(Blob)]
     function.restype = wintypes.BOOL
     if not function(ctypes.byref(incoming), None, None, None, None, 1, ctypes.byref(outgoing)):
-        raise OSError("Windows DPAPI: ключ недоступен для текущей учётной записи.")
+        raise ctypes.WinError(ctypes.get_last_error())
     try:
         return ctypes.string_at(outgoing.data, outgoing.size)
     finally:

@@ -1,8 +1,9 @@
 """Window actions shared by the toolbar, keyboard and mouse navigation."""
 from PyQt5.QtCore import QObject, QEvent, Qt, QTimer
 from PyQt5.QtGui import QKeySequence
-from PyQt5.QtWidgets import QAction, QApplication, QWidget, QPushButton, QMessageBox, QVBoxLayout, QCheckBox
+from PyQt5.QtWidgets import QAction, QApplication, QWidget, QPushButton, QMessageBox, QVBoxLayout
 from .widgets import DisabledHintButton
+from PyQt5 import sip
 
 
 class ShellActions(QObject):
@@ -22,7 +23,7 @@ class ShellActions(QObject):
         help_button = QPushButton("help")
         self.help_button = help_button
         help_button.setObjectName("helpButton")
-        help_button.setToolTip("Справка и горячие клавиши · F1")
+        help_button.setToolTip("Справка: статусы, Scheduled и горячие клавиши · F1")
         help_button.clicked.connect(self.help)
         layout.addWidget(help_button)
         window.sidebar.layout().addWidget(footer)
@@ -41,10 +42,13 @@ class ShellActions(QObject):
             window.addAction(action)
         self.app = QApplication.instance()
         self.app.installEventFilter(self)
+        self._detached = False
+        window.destroyed.connect(self.detach)
         self.idle_timer = QTimer(self)
         self.idle_timer.setSingleShot(True)
         self.idle_timer.setInterval(60000)
-        self.idle_timer.timeout.connect(lambda: window.set_read_only(True))
+        self._paused_admin_ms = None
+        self.idle_timer.timeout.connect(self._expire_admin)
         self.update_mode()
 
     def panel(self):
@@ -55,10 +59,7 @@ class ShellActions(QObject):
 
     def update_mode(self):
         readonly = self.window.preferences.get("read_only", True)
-        if readonly:
-            self.idle_timer.stop()
-        else:
-            self.idle_timer.start()
+        self.sync_admin_timer()
         blocked = self.mode.blockSignals(True)
         self.mode.setChecked(not readonly)
         self.mode.blockSignals(blocked)
@@ -67,6 +68,34 @@ class ShellActions(QObject):
         self.window._update_brand()
         self.window._apply_sidebar()
         self.window.refresh_write_controls()
+
+    def yaml_editing(self):
+        panel = self.panel()
+        return (not self.window.preferences.get('read_only', True) and panel is not None
+                and panel.isVisible() and panel.tabs.currentWidget() is panel.yaml_editor)
+
+    def sync_admin_timer(self, *, activity=False):
+        if self.window.preferences.get('read_only', True):
+            self.idle_timer.stop()
+            self._paused_admin_ms = None
+        elif self.yaml_editing():
+            if self._paused_admin_ms is None:
+                self._paused_admin_ms = max(1, self.idle_timer.remainingTime()) if self.idle_timer.isActive() else 60000
+            self.idle_timer.stop()
+        elif self._paused_admin_ms is not None:
+            remaining, self._paused_admin_ms = self._paused_admin_ms, None
+            self.idle_timer.start(60000 if activity else remaining)
+        elif activity or not self.idle_timer.isActive():
+            self.idle_timer.start(60000)
+
+    def admin_time_remaining(self):
+        return self._paused_admin_ms if self._paused_admin_ms is not None else max(0, self.idle_timer.remainingTime())
+
+    def _expire_admin(self):
+        if self.yaml_editing():
+            self.sync_admin_timer()
+        else:
+            self.window.set_read_only(True)
 
     def mode_tooltip(self):
         return ("Включить режим администратора: одно изменение или одна минута Terminal. Потребуется пример; права определяет Kubernetes."
@@ -86,14 +115,20 @@ class ShellActions(QObject):
         if target is None:
             self.update_mode()
             return
+        question = 'Разрешить изменения?'
         if confirm(self.window, "Разрешить изменения?",
-                   "Разрешить изменения?", arithmetic=True):
+                   question, arithmetic=True):
             self.update_mode()
             self.window.admin_access.activate(target)
         else:
             self.update_mode()
 
     def refresh(self):
+        from .request_policy import manual_read
+        with manual_read():
+            self._refresh_current()
+
+    def _refresh_current(self):
         panel = self.panel()
         if not panel:
             page = self.window.tabs.currentWidget()
@@ -152,16 +187,30 @@ class ShellActions(QObject):
             "Enter / двойной клик — открыть строку; Shift+F10 — её меню\n\n"
             "Кластер — окружение. Namespace — область внутри кластера.\n"
             "Deployment задаёт шаблон и число копий приложения. Pod — экземпляр с контейнерами.\n"
-            "«Удалить подключение» удаляет только локальную запись, не кластер.")
+            "«Удалить подключение» удаляет только локальную запись, не кластер.\n\n"
+            "◷ Scheduled — расписание CronJob, жёлтый значок часов.\n"
+            "Наведите на значок: следующий запуск и обратный отсчёт. Нажмите: карточка CronJob.\n"
+            "Зелёный — последний запуск успешен или выполняется; жёлтый — ожидание; красный — ошибка.\n"
+            "Если пояс контроллера неизвестен: Настройки → кластер → Изменить → Часовой пояс.\n"
+            "Total Pods — основные Pod; Batch Pods и владельцы ресурсов указаны отдельно в скобках.")
+
+    def detach(self):
+        if self._detached: return
+        self._detached = True
+        if not sip.isdeleted(self.app): self.app.removeEventFilter(self)
+        if hasattr(self, 'idle_timer') and not sip.isdeleted(self.idle_timer): self.idle_timer.stop()
 
     def eventFilter(self, watched, event):
+        if self._detached or sip.isdeleted(self.window):
+            self.detach()
+            return False
         if (isinstance(watched, QWidget) and (watched is self.window or self.window.isAncestorOf(watched))
                 and event.type() in (QEvent.Type.KeyPress, QEvent.Type.MouseButtonPress,
                                      QEvent.Type.MouseMove, QEvent.Type.Wheel, QEvent.Type.TouchBegin)
                 and not self.window.preferences.get("read_only", True)):
             modal = QApplication.activeModalWidget()
             if modal is None or not modal.property("adminReview"):
-                self.idle_timer.start()
+                self.sync_admin_timer(activity=True)
         if (event.type() in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease)
                 and event.button() == Qt.MouseButton.BackButton and isinstance(watched, QWidget)
                 and (watched is self.window or self.window.isAncestorOf(watched))

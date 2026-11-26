@@ -38,7 +38,7 @@ def validate_server(value: str) -> str:
 
 
 def sanitize_kubeconfig(raw: str, server: str) -> str:
-    if not raw or len(raw.encode()) > 1_000_000:
+    if not isinstance(raw, str) or not raw or len(raw.encode()) > 1_000_000:
         raise ValueError("kubectl login вернул пустой или слишком большой kubeconfig.")
     config = yaml.safe_load(raw)
     if not isinstance(config, dict):
@@ -87,6 +87,23 @@ def sanitize_kubeconfig(raw: str, server: str) -> str:
     return yaml.safe_dump(safe, allow_unicode=True, sort_keys=False)
 
 
+class KeyUnavailableError(OSError):
+    """Only a DPAPI unprotect failure of an existing marked portable key."""
+
+    def __init__(self, cause):
+        super().__init__('Windows DPAPI: local key is unavailable for this Windows account.')
+        self.winerror = getattr(cause, 'winerror', None)
+        self.reason = 'unprotect'
+
+
+class UnsupportedKeyProtection(KeyUnavailableError):
+    """A recognized protected key cannot be opened on this platform."""
+    def __init__(self):
+        OSError.__init__(self, 'Windows DPAPI UserData cannot be opened on this platform. Add clusters again after local recovery.')
+        self.winerror = None
+        self.reason = 'unsupported_protection'
+
+
 class UserStore:
     def __init__(self, root: Path):
         self._lock = threading.RLock()
@@ -107,10 +124,19 @@ class UserStore:
                 key = PREFIX + transform(key)
             self._atomic_bytes(self.key_file, key)
         self.key = self.key_file.read_bytes()
+        from .windows_secrets import PREFIX
+        if os.name != 'nt' and self.key.startswith(PREFIX):
+            raise UnsupportedKeyProtection()
         if os.name == "nt":
             from .windows_secrets import PREFIX, transform
             if self.key.startswith(PREFIX):
-                self.key = transform(self.key[len(PREFIX):], decrypt=True)
+                blob = self.key[len(PREFIX):]
+                if not blob:
+                    raise ValueError('Повреждён ключ UserData/portable.key.')
+                try:
+                    self.key = transform(blob, decrypt=True)
+                except OSError as exc:
+                    raise KeyUnavailableError(exc) from exc
             elif len(self.key) == 32:
                 # Atomic migration preserves the AES key and all ciphertexts.
                 self._atomic_bytes(self.key_file, PREFIX + transform(self.key))
@@ -118,6 +144,7 @@ class UserStore:
             raise ValueError("Повреждён ключ UserData/portable.key.")
         self.clusters_file = root / "clusters.json"
         self.preferences_file = root / "preferences.json"
+        self._account_passwords = {}
 
     @staticmethod
     def _atomic_bytes(path: Path, content: bytes) -> None:
@@ -157,23 +184,156 @@ class UserStore:
     def clusters(self) -> list[dict]:
         with self._lock:
             data = self._read_json(self.clusters_file, {"version": 1, "clusters": []})
-        if not isinstance(data, dict) or data.get("version") != 1 or not isinstance(data.get("clusters"), list):
-            raise ValueError("Повреждён UserData/clusters.json.")
-        return data["clusters"]
+            if not isinstance(data, dict) or data.get("version") != 1 or not isinstance(data.get("clusters"), list):
+                raise ValueError("Повреждён UserData/clusters.json.")
+            changed = False
+            for cluster in data['clusters']:
+                if isinstance(cluster, dict) and cluster.get('controllerTimeZone'):
+                    try:
+                        self._validate_controller_timezone(cluster['controllerTimeZone'])
+                    except ValueError:
+                        cluster['controllerTimeZone'] = ''
+                        changed = True
+            if changed:
+                self._write_json(self.clusters_file, data)
+            if self._migrate_accounts(data):
+                self._write_json(self.clusters_file, data)
+            accounts = {a['id']: a for a in data.get('accounts', [])}
+            records = []
+            for record in data['clusters']:
+                value = dict(record)
+                if value.get('accountId'):
+                    account = accounts.get(value['accountId'])
+                    if account is None:
+                        raise ValueError('Учётная запись подключения не найдена.')
+                    value.update(username=account['username'], accountName=account['name'],
+                                 accountRevision=account['updatedAt'])
+                    if account.get('encryptedPassword'):
+                        value['encryptedPassword'] = account['encryptedPassword']
+                records.append(value)
+            return records
+
+    def _migrate_accounts(self, data):
+        """Migrate legacy passwords and references atomically in one document."""
+        accounts = data.setdefault('accounts', [])
+        if not any(c.get('authMode') != 'kubeconfig' and not c.get('accountId') for c in data['clusters']):
+            return False
+        known = {(a['username'], self.decrypt(a['encryptedPassword']) if a.get('encryptedPassword') else ''): a
+                 for a in accounts}
+        shared = {}
+        for c in sorted(data['clusters'], key=lambda c: c.get('updatedAt', '')):
+            if c.get('sharedPassword') and c.get('encryptedPassword'):
+                shared[c.get('username')] = c['encryptedPassword']
+        changed = False
+        for record in data['clusters']:
+            if record.get('authMode') == 'kubeconfig' or record.get('accountId'):
+                continue
+            username = record.get('username', '').strip()
+            cipher = record.get('encryptedPassword', '')
+            if record.get('sharedPassword'):
+                cipher = shared.get(username, cipher)
+            try:
+                plaintext = self.decrypt(cipher) if cipher else ''
+            except Exception:
+                cipher, plaintext = '', ''
+                record['credential_error'] = 'Сохранённый пароль повреждён. Обновите учётную запись.'
+            key = (username, plaintext)
+            account = known.get(key)
+            if account is None:
+                label = username or 'Учётная запись'
+                if any(a['name'] == label for a in accounts): label += f' ({len(accounts)+1})'
+                account = dict(id=str(uuid.uuid4()), name=label, username=username, updatedAt=now())
+                if cipher: account['encryptedPassword'] = cipher
+                accounts.append(account)
+                known[key] = account
+            record['accountId'] = account['id']
+            for field in ('username', 'encryptedPassword', 'sharedPassword'):
+                record.pop(field, None)
+            changed = True
+        return changed
+
+    def accounts(self):
+        with self._lock:
+            self.clusters()
+            return self._read_json(self.clusters_file, {}).get('accounts', [])
+
+    def account_password(self, account_id):
+        with self._lock:
+            account = next((a for a in self.accounts() if a['id'] == account_id), None)
+            if account is None: raise ValueError('Учётная запись не найдена.')
+            return self._account_passwords.get(account_id) or (self.decrypt(account['encryptedPassword']) if account.get('encryptedPassword') else '')
+
+    def put_account(self, name, username, password=None, *, account_id=None, remember_password=None, expected=None):
+        name, username = name.strip(), username.strip()
+        if not name or len(name) > 80 or not username or len(username) > 256 or any(ord(c) < 32 for c in name+username):
+            raise ValueError('Укажите имя учётной записи и логин без управляющих символов.')
+        if password is not None and (not password or len(password) > 1024):
+            raise ValueError('Укажите пароль от 1 до 1024 символов.')
+        with self._lock:
+            self.clusters()
+            data = self._read_json(self.clusters_file, {'version':1,'clusters':[],'accounts':[]})
+            existing = next((a for a in data['accounts'] if a['id'] == account_id), None)
+            if account_id and existing is None: raise ValueError('Учётная запись не найдена.')
+            if expected is not None and existing != expected: raise ValueError('Учётная запись изменена. Откройте её заново.')
+            if any(a['name'].casefold() == name.casefold() and a['id'] != account_id for a in data['accounts']):
+                raise ValueError('Имя учётной записи уже используется.')
+            account = dict(existing or {}, id=account_id or str(uuid.uuid4()), name=name, username=username, updatedAt=now())
+            if password is not None:
+                self._account_passwords[account['id']] = password
+                from .app_logging import register_secret
+                register_secret(password)
+                if remember_password is True or (remember_password is None and (existing or {}).get('encryptedPassword')):
+                    account['encryptedPassword'] = self.encrypt(password)
+                else: account.pop('encryptedPassword', None)
+            elif remember_password is True and not account.get('encryptedPassword'):
+                session_password = self._account_passwords.get(account['id'])
+                if session_password:
+                    account['encryptedPassword'] = self.encrypt(session_password)
+            elif remember_password is False:
+                if account.get('encryptedPassword'):
+                    self._account_passwords[account['id']] = self.decrypt(account['encryptedPassword'])
+                account.pop('encryptedPassword', None)
+            if existing and existing['username'] != username:
+                for c in data['clusters']:
+                    if c.get('accountId') == account['id']:
+                        c.update(encryptedKubeconfig='', enabled=False, updatedAt=now())
+            data['accounts'] = [a for a in data['accounts'] if a['id'] != account['id']] + [account]
+            self._write_json(self.clusters_file, data)
+            return account
+
+    def delete_account(self, identifier):
+        with self._lock:
+            self.clusters()
+            data = self._read_json(self.clusters_file, {})
+            if any(c.get('accountId') == identifier for c in data['clusters']):
+                raise ValueError('Учётная запись используется подключением. Сначала выберите для него другую запись.')
+            if not any(a['id'] == identifier for a in data['accounts']): raise ValueError('Учётная запись не найдена.')
+            data['accounts'] = [a for a in data['accounts'] if a['id'] != identifier]
+            self._account_passwords.pop(identifier, None)
+            self._write_json(self.clusters_file, data)
 
     def save_clusters(self, clusters: list[dict]) -> None:
         with self._lock:
-            self._write_json(self.clusters_file, {"version": 1, "clusters": clusters})
+            previous = self._read_json(self.clusters_file, {})
+            data = dict(version=1, clusters=[dict(c) for c in clusters], accounts=previous.get('accounts', []))
+            self._migrate_accounts(data)
+            for record in data['clusters']:
+                if record.get('accountId'):
+                    for field in ('username','encryptedPassword','sharedPassword','accountName','accountRevision'):
+                        record.pop(field, None)
+            self._write_json(self.clusters_file, data)
 
     def preferences(self) -> dict:
-        value = self._read_json(self.preferences_file, {})
+        with self._lock:
+            value = self._read_json(self.preferences_file, {})
         if not isinstance(value, dict):
             raise ValueError("Повреждён UserData/preferences.json.")
         from .views import validate_preferences
         return validate_preferences(value)
 
     def save_preferences(self, value: dict) -> None:
-        self._write_json(self.preferences_file, value)
+        with self._lock:
+            self._write_json(self.preferences_file, value)
 
     def encrypt(self, plaintext: str) -> str:
         nonce = secrets.token_bytes(12)
@@ -202,24 +362,24 @@ class UserStore:
             return cluster.get("authMode") != "kubeconfig"
 
     def saved_password(self, cluster: dict) -> str:
-        if cluster.get("sharedPassword"):
-            group = [c for c in self.clusters() if c.get("sharedPassword") and c["username"] == cluster["username"] and c.get("encryptedPassword")]
-            cluster = max(group, key=lambda c: c.get("updatedAt", "")) if group else cluster
+        if cluster.get('accountId'):
+            return self.account_password(cluster['accountId'])
         encrypted = cluster.get("encryptedPassword")
         return self.decrypt(encrypted) if encrypted else ""
 
     def put_cluster(self, name: str, server: str, username: str, kubeconfig: str | None, enabled: bool = True,
                     cluster_id: str | None = None, *, password: str | None = None,
-                    remember_password: bool | None = None, kubectl_path: str | None = None, expected=None, shared_password=None) -> dict:
+                    remember_password: bool | None = None, kubectl_path: str | None = None, expected=None, shared_password=None,
+                    controller_timezone: str | None = None, unverified: bool = False, account_id=None) -> dict:
         with self._lock:
             if expected is not None:
                 current = next((c for c in self.clusters() if c["id"] == cluster_id), None)
                 if current != expected:
                     raise ValueError("Кластер изменился во время входа. Откройте форму заново.")
             return self._put_cluster(name, server, username, kubeconfig, enabled, cluster_id,
-                                     password, remember_password, kubectl_path, shared_password)
+                                     password, remember_password, kubectl_path, shared_password, controller_timezone, unverified, account_id)
 
-    def _put_cluster(self, name, server, username, kubeconfig, enabled, cluster_id, password, remember_password, kubectl_path, shared_password):
+    def _put_cluster(self, name, server, username, kubeconfig, enabled, cluster_id, password, remember_password, kubectl_path, shared_password, controller_timezone=None, unverified=False, account_id=None):
         name, username = name.strip(), username.strip()
         if not name or len(name) > 80 or any(ord(c) < 32 for c in name):
             raise ValueError("Имя кластера должно содержать от 1 до 80 символов без управляющих знаков.")
@@ -232,16 +392,32 @@ class UserStore:
             raise ValueError("Кластер не найден.")
         if any(item["name"].casefold() == name.casefold() and item["id"] != cluster_id for item in clusters):
             raise ValueError("Кластер с таким именем уже существует.")
-        if existing and not kubeconfig and (server != existing["server"] or username != existing["username"]):
+        if unverified and (enabled or kubeconfig):
+            raise ValueError('Непроверенное подключение можно сохранить только отключённым, без токена.')
+        if existing and not kubeconfig and not unverified and (server != existing["server"] or username != existing["username"]):
             raise ValueError("Для смены API server или пользователя требуется новый вход.")
-        if not kubeconfig and not existing:
+        if not kubeconfig and not existing and not unverified:
             raise ValueError("Для нового кластера требуется успешный kubectl login.")
+        if enabled and not kubeconfig and not (existing or {}).get('encryptedKubeconfig'):
+            raise ValueError('Сначала выполните успешный вход в настройках подключения.')
         record = {"id": cluster_id or str(uuid.uuid4()), "name": name, "server": server, "username": username,
-                  "enabled": bool(enabled), "encryptedKubeconfig": self.encrypt(sanitize_kubeconfig(kubeconfig, server)) if kubeconfig else existing["encryptedKubeconfig"],
+                  "enabled": bool(enabled), "encryptedKubeconfig": '' if unverified else self.encrypt(sanitize_kubeconfig(kubeconfig, server)) if kubeconfig else existing["encryptedKubeconfig"],
                   "createdAt": existing["createdAt"] if existing else now(), "updatedAt": now()}
+        binding = account_id or ((existing or {}).get('accountId') if (existing or {}).get('username') == username else None)
+        if binding:
+            account = next((a for a in self.accounts() if a['id'] == binding), None)
+            if account is None or account['username'] != username: raise ValueError('Учётная запись подключения изменена.')
+            record['accountId'] = binding
         same_identity = existing and server == existing["server"] and username == existing["username"]
-        record["sharedPassword"] = bool(shared_password if shared_password is not None else (existing or {}).get("sharedPassword", False))
+        zone = controller_timezone if controller_timezone is not None else (existing or {}).get('controllerTimeZone', '')
+        record['controllerTimeZone'] = self._validate_controller_timezone(zone)
         record["authMode"] = "login" if password else (existing or {}).get("authMode", "login")
+        if binding: record['authMode'] = 'login'
+        if unverified:
+            record['authMode'] = 'login'
+            record['credential_error'] = 'Вход не подтверждён. Подключение сохранено отключённым. Исправьте данные и выполните вход.'
+            # An unverified password must never replace a shared group's saved password.
+            password, remember_password = None, False
         if remember_password is True:
             if password:
                 if len(password) > 1024:
@@ -259,24 +435,36 @@ class UserStore:
                 raise ValueError("Некорректный путь к kubectl.")
             record["kubectlPath"] = client.strip()
         records = [record if item["id"] == cluster_id else item for item in clusters] if existing else [*clusters, record]
-        if record["sharedPassword"] and password and remember_password:
-            for peer in records:
-                if peer.get("sharedPassword") and peer["username"] == username:
-                    peer["encryptedPassword"] = self.encrypt(password)
-                    peer["updatedAt"] = record["updatedAt"]
         self.save_clusters(records)
-        return record
+        if binding and not unverified and (password is not None or remember_password is False):
+            self.put_account(account['name'], username, password, account_id=binding, remember_password=remember_password)
+        return next(c for c in self.clusters() if c['id'] == record['id'])
 
-    def set_shared_password(self, identifier, enabled):
+    @staticmethod
+    def _validate_controller_timezone(value):
+        if not isinstance(value, str) or len(value) > 128:
+            raise ValueError('Укажите UTC-смещение, например UTC+04:00.')
+        value = value.strip()
+        if value:
+            from .schedule import load_zone
+            try:
+                load_zone(value)
+            except ValueError:
+                raise ValueError('Допустимы только UTC и смещения вида UTC+04:00.') from None
+        return value
+
+
+    def set_cluster_enabled(self, identifier, enabled):
         with self._lock:
             records = self.clusters()
-            cluster = next(c for c in records if c["id"] == identifier)
-            peers = [c for c in records if c["id"] != identifier and c.get("sharedPassword") and c["username"] == cluster["username"] and c.get("encryptedPassword")]
-            if enabled and peers:
-                cluster["encryptedPassword"] = max(peers, key=lambda c: c.get("updatedAt", ""))["encryptedPassword"]
-            cluster["sharedPassword"] = bool(enabled)
-            cluster["updatedAt"] = now()
+            cluster = next((c for c in records if c['id'] == identifier), None)
+            if cluster is None:
+                raise ValueError('Кластер не найден.')
+            if enabled and not cluster.get('encryptedKubeconfig'):
+                raise ValueError('Сначала выполните успешный вход: Настройки → подключение → Настроить / войти.')
+            cluster['enabled'] = bool(enabled)
             self.save_clusters(records)
+
 
     def import_contexts(self, entries):
         if not entries or len(entries) > 100:
@@ -332,28 +520,20 @@ class UserStore:
         usernames = {cluster["username"] for cluster in selected}
         if len(usernames) != 1:
             raise ValueError("Для общего входа кластеры должны иметь одного пользователя.")
-        if len({c["server"] for c in selected}) != 1 and not all(c.get("sharedPassword") for c in selected):
-            raise ValueError("Общий вход между разными endpoints запрещён; войдите в каждый отдельно.")
+        account_ids = {c.get('accountId') for c in selected}
+        if len(account_ids) != 1:
+            raise ValueError('Для общего входа выберите одну учётную запись.')
         prepared = {cluster["id"]: self.encrypt(sanitize_kubeconfig(updates[cluster["id"]], cluster["server"])) for cluster in selected}
         timestamp = now()
         for cluster in selected:
             cluster["encryptedKubeconfig"] = prepared[cluster["id"]]
-            if remember_password is False:
-                cluster.pop("encryptedPassword", None)
-            elif password is not None and (remember_password is True or cluster.get("encryptedPassword")):
-                if not password or len(password) > 1024:
-                    raise ValueError("Введите пароль кластера (не более 1024 символов).")
-                cluster["encryptedPassword"] = self.encrypt(password)
+            cluster.pop('credential_error', None)
             cluster["updatedAt"] = timestamp
-        if password is not None and any(c.get("sharedPassword") for c in selected):
-            for peer in clusters:
-                if peer.get("sharedPassword") and peer["username"] in usernames:
-                    if remember_password is False:
-                        peer.pop("encryptedPassword", None)
-                    else:
-                        peer["encryptedPassword"] = self.encrypt(password)
-                    peer["updatedAt"] = timestamp
         self.save_clusters(clusters)
+        if password is not None and next(iter(account_ids), None):
+            account = next(a for a in self.accounts() if a['id'] in account_ids)
+            self.put_account(account['name'], account['username'], password, account_id=account['id'],
+                             remember_password=remember_password)
 
     def audit(self, action: str, cluster_id: str, namespace: str = "", name: str = "", **details) -> None:
         # No request bodies, tokens, passwords or command strings enter the audit file.
@@ -372,7 +552,9 @@ class UserStore:
 
     @contextmanager
     def operation(self, action, cluster_id, namespace, name, **details):
-        correlation = str(uuid.uuid4())
+        from .write_guard import current_permit
+        permit = current_permit()
+        correlation = permit.intent.operation_id if permit is not None else str(uuid.uuid4())
         cluster = next((c for c in self.clusters() if c["id"] == cluster_id), {})
         metadata = dict(operationId=correlation, username=cluster.get("username", ""), **details)
         # A failed intent write prevents the operation from starting.
@@ -381,7 +563,11 @@ class UserStore:
             yield correlation
         except Exception as exc:
             try:
-                self.audit(action, cluster_id, namespace, name, phase="unknown", errorType=type(exc).__name__, **metadata)
+                phase = 'unknown'
+                if permit is not None:
+                    phase = {'issued': 'canceled-before-dispatch', 'rejected': 'rejected',
+                             'accepted': 'accepted'}.get(permit.state, 'unknown')
+                self.audit(action, cluster_id, namespace, name, phase=phase, errorType=type(exc).__name__, **metadata)
             except OSError:
                 pass
             raise

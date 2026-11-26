@@ -12,6 +12,25 @@ _secrets = OrderedDict()
 MAX_SECRETS = 128
 SECRET_TTL = 300
 
+_problems = OrderedDict()
+_problem_lock = threading.Lock()
+
+
+def log_problem(scope, message):
+    """Keep complete visible failures, without flooding a polling journal."""
+    safe = redact(str(message))
+    key = (scope, safe)
+    with _problem_lock:
+        stamp = time.monotonic()
+        previous = _problems.get(key, float('-inf'))
+        if stamp-previous < 60:
+            return
+        _problems[key] = stamp
+        _problems.move_to_end(key)
+        while len(_problems) > 256:
+            _problems.popitem(last=False)
+    logging.getLogger('quaber.errors').error('%s: %s', scope, safe)
+
 
 def register_secret(value):
     if value:

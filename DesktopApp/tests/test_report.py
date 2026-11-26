@@ -85,28 +85,31 @@ class ReportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             window = MainWindow(UserStore(root/"UserData"), root)
-            window.timer.stop()
-            window.auth_timer.stop()
-            QTest.qWait(20)
-            window.snapshot = {"c": {"name": "Fixture", "namespaces": {"ns": {
-                "deployments": [{"metadata": {"name": f"app-{i}", "uid": f"uid-{i}"}, "spec": {"replicas": 1}, "status": {"availableReplicas": 0}} for i in range(4)],
-                "pods": [], "replica_sets": []}}}}
-            window.render_matrix()
-            self.assertFalse(window.matrix.isColumnHidden(1))
-            self.assertIn("Нет Pod", window.matrix.item(0, 1).text())
-            header = window.matrix.verticalHeader()
-            header.moveSection(0, 2)
-            def order():
-                return [window.matrix.item(header.logicalIndex(i), 0).text() for i in range(4)]
-            before = order()
-            window.render_matrix()
-            self.assertEqual(before, order())
-            self.assertFalse(hasattr(window, "allpods_page"))
-            self.assertFalse(hasattr(window, "pod_controls"))
-            self.assertFalse(any("Все Pod" == window.tabs.tabText(i) for i in range(window.tabs.count())))
-            window.close()
-            window._cleanup_thread.join(5)
-            window.deleteLater()
+            try:
+                window.timer.stop()
+                window.auth_timer.stop()
+                QTest.qWait(20)
+                window.store.clusters = lambda: [dict(id="c", name="Fixture", enabled=True)]
+                window.snapshot = {"c": {"name": "Fixture", "namespaces": {"ns": {
+                    "deployments": [{"metadata": {"name": f"app-{i}", "uid": f"uid-{i}"}, "spec": {"replicas": 1}, "status": {"availableReplicas": 0}} for i in range(4)],
+                    "pods": [], "replica_sets": []}}}}
+                window.render_matrix()
+                self.assertFalse(window.matrix.isColumnHidden(1))
+                self.assertIn("Нет Pod", window.matrix.item(0, 1).text())
+                header = window.matrix.verticalHeader()
+                header.moveSection(0, 2)
+                def order():
+                    return [window.matrix.item(header.logicalIndex(i), 0).text() for i in range(4)]
+                before = order()
+                window.render_matrix()
+                self.assertEqual(before, order())
+                self.assertFalse(hasattr(window, "allpods_page"))
+                self.assertFalse(hasattr(window, "pod_controls"))
+                self.assertFalse(any("Все Pod" == window.tabs.tabText(i) for i in range(window.tabs.count())))
+            finally:
+                window.close()
+                window._cleanup_thread.join(5)
+                window.deleteLater()
 
     def test_updated_details_preserve_dirty_yaml_base(self):
         with tempfile.TemporaryDirectory() as directory:

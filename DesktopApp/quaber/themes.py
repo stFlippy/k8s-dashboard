@@ -105,6 +105,8 @@ def apply_palette(widget, light=False):
                       (QPalette.ColorRole.HighlightedText, "active_text"), (QPalette.ColorRole.ToolTipBase, "panel"),
                       (QPalette.ColorRole.ToolTipText, "foreground")):
         palette.setColor(role, QColor(colors[key]))
+    for group in (QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive, QPalette.ColorGroup.Disabled):
+        palette.setColor(group, QPalette.ColorRole.PlaceholderText, QColor(colors["muted"]))
     palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text, QColor(colors["muted"]))
     widget.setPalette(palette)
     font = widget.font()
@@ -152,7 +154,7 @@ def stylesheet(light=False):
     QWidget#sidebar[writeEnabled="true"] QPushButton#sideNav:hover {{ background:{write_hover}; }}
     QWidget#sidebar[writeEnabled="true"] QPushButton#adminMode:hover, QWidget#sidebar[writeEnabled="true"] QPushButton#helpButton:hover {{ background:{write_hover}; }}
     QWidget#sidebar[writeEnabled="true"] QPushButton#sideNav:checked {{ background:#891629; color:#FFFFFF; border-left-color:#FFFFFF; }}
-    QLineEdit,QTextEdit,QPlainTextEdit,QComboBox,QSpinBox {{ background:{c['input']}; border:1px solid {c['input_border']}; border-radius:5px; padding:4px 8px; selection-background-color:{c['selection']}; }}
+    QLineEdit,QTextEdit,QPlainTextEdit,QComboBox,QSpinBox {{ color:{c['foreground']}; background:{c['input']}; border:1px solid {c['input_border']}; border-radius:5px; padding:4px 8px; selection-background-color:{c['selection']}; }}
     QLineEdit:focus,QPlainTextEdit:focus,QComboBox:focus {{ border-color:{c['accent']}; }}
     QLineEdit#copyField {{ color:{c['foreground']}; padding:0 2px; border-radius:2px; selection-background-color:{c['accent'] if light else c['selection']}; selection-color:#FFFFFF; }}
     QPlainTextEdit#codeEditorText,QPlainTextEdit#codeLineNumbers,QPlainTextEdit#podLogs,QPlainTextEdit#podConsole,QPlainTextEdit#applicationLog {{ font-family:'{monospace}'; font-size:14px; }}
@@ -164,12 +166,12 @@ def stylesheet(light=False):
     QHeaderView::section {{ background:{c['sidebar']}; color:{c['foreground']}; border:1px solid {c['border']}; padding:6px; font-weight:700; }}
     QTableView::item:selected {{ background:{c['selection']}; color:{c['foreground']}; }}
     QTableView#frozenDeployment {{ background:{c['sidebar']}; border-right:1px solid {c['input_border']}; font-weight:600; }}
-    QTreeWidget#resourceList {{ background:{c['editor']}; alternate-background-color:{c['sidebar']}; border:0; outline:0; }}
-    QTreeWidget#resourceList::item {{ padding:9px 12px; border:0; border-bottom:1px solid {c['border']}; min-height:22px; }}
-    QTreeWidget#resourceList::item:hover {{ background:{'#D9E8FA' if light else '#263C56'}; }}
-    QTreeWidget#resourceList::item:selected, QTreeWidget#resourceList::item:selected:hover,
-    QTreeWidget#resourceList::item:selected:!active {{ background:{c['accent'] if light else c['selection']}; color:#FFFFFF; border-bottom-color:{c['accent']}; }}
-    QTreeWidget#resourceList QHeaderView::section {{ text-align:left; padding:10px 12px; border:0; border-bottom:1px solid {c['border']}; color:{c['muted']}; font-weight:400; }}
+    QAbstractItemView#resourceList {{ background:{c['editor']}; alternate-background-color:{c['sidebar']}; border:0; outline:0; }}
+    QAbstractItemView#resourceList::item {{ padding:9px 12px; border:0; border-bottom:1px solid {c['border']}; min-height:22px; }}
+    QAbstractItemView#resourceList::item:hover {{ background:{'#D9E8FA' if light else '#263C56'}; }}
+    QAbstractItemView#resourceList::item:selected, QAbstractItemView#resourceList::item:selected:hover,
+    QAbstractItemView#resourceList::item:selected:!active {{ background:{c['accent'] if light else c['selection']}; color:#FFFFFF; border-bottom-color:{c['accent']}; }}
+    QAbstractItemView#resourceList QHeaderView::section {{ text-align:left; padding:10px 12px; border:0; border-bottom:1px solid {c['border']}; color:{c['muted']}; font-weight:400; }}
     QFrame#quotaCard {{ background:{c['sidebar']}; border:1px solid {c['border']}; border-radius:5px; }}
     QFrame#quotaCard QLabel {{ background:transparent; border:0; }}
     QLabel#sectionTitle {{ font-size:17px; font-weight:700; color:{c['foreground']}; padding:3px 0 6px; }}
@@ -200,9 +202,9 @@ def stylesheet(light=False):
     QCheckBox#statusFilter[status="Pending"] {{ border-left:1px solid {c['border']}; }}
     QCheckBox#statusFilter[status="Failed"] {{ border-left:1px solid {c['border']}; }}
     QCheckBox#statusFilter[status="Unknown"] {{ border-left:1px solid {c['border']}; }}
-    QCheckBox#recentFilter {{ border-left:1px solid {c['border']}; }}
     QLabel#lastUpdated {{ color:{c['muted']}; font-size:12px; }}
     QLabel#totalCounter {{ font-weight:600; padding:6px; }}
+    QLabel#workloadCounter {{ font-weight:600; }}
     QWidget#resourceHeader,QWidget#resourceContext {{ background:{c['sidebar']}; border-bottom:1px solid {c['border']}; }}
     QWidget#resourceContext QLabel,QWidget#resourceHeader QLabel {{ background:transparent; }}
     QWidget#resourceContext QWidget#resourceContextField {{ background:transparent; }}

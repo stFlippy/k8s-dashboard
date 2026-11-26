@@ -59,11 +59,3 @@ def resource_changes(original, fields, remove_limits=False):
             result.pop(category, None)
     validate_resources(result)
     return result
-
-
-def scale_summary(resource, replicas):
-    current = resource.get("spec", {}).get("replicas", 1)
-    containers = resource.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
-    cpu = sum(cpu_cores(c.get("resources", {}).get("requests", {}).get("cpu")) or 0 for c in containers)
-    ram = sum(memory_bytes(c.get("resources", {}).get("requests", {}).get("memory")) or 0 for c in containers)
-    return f"Реплики: {current} → {replicas}.\nRequests контейнеров после изменения: CPU {cpu*replicas*1000:g}m; RAM {ram*replicas/1048576:g} Mi.\nКвоты и политики кластера могут помешать созданию Pod."

@@ -2,6 +2,46 @@
 from collections import defaultdict
 
 
+def scope_revision(scope):
+    """Bounded topology revision, independent of managedFields payload size.
+
+    Current resource references are rebound separately; owner edges and immutable
+    identity/version still detect topology changes, including in-place fixtures.
+    """
+    return tuple((field, tuple(
+        (value.get('metadata', {}).get('uid'), value.get('metadata', {}).get('name'),
+         value.get('metadata', {}).get('resourceVersion'),
+         tuple((o.get('kind'), o.get('uid'), o.get('name'), o.get('controller'))
+               for o in value.get('metadata', {}).get('ownerReferences', [])))
+        for value in scope.get(field, [])))
+        for field in ('deployments', 'pods', 'replica_sets', 'stateful_sets',
+                      'daemon_sets', 'replication_controllers', 'jobs', 'cron_jobs'))
+
+
+def rebind_scope(scope, index):
+    """Keep resolved owner groups, but never retain old equal-snapshot resources."""
+    fields = (('deployments', 'Deployment'), ('pods', 'Pod'), ('replica_sets', 'ReplicaSet'),
+              ('stateful_sets', 'StatefulSet'), ('daemon_sets', 'DaemonSet'),
+              ('replication_controllers', 'ReplicationController'), ('jobs', 'Job'), ('cron_jobs', 'CronJob'))
+    current = {}
+    for field, kind in fields:
+        for value in scope.get(field, []):
+            meta = value.get('metadata', {})
+            current.setdefault((kind, meta.get('uid') or ('name', meta.get('name'))), value)
+    entries, pods_index = index
+    for entry in entries.values():
+        if entry.get('_unresolved'):
+            continue
+        kind, meta = entry.get('kind', 'Deployment'), entry.get('metadata', {})
+        value = current[(kind, meta.get('uid') or ('name', meta.get('name')))]
+        value = dict(value, kind=kind)
+        entry.clear()
+        entry.update(value)
+    for pods in pods_index.values():
+        pods[:] = [current[('Pod', p.get('metadata', {}).get('uid') or ('name', p.get('metadata', {}).get('name')))] for p in pods]
+    return index
+
+
 def index_scope(scope):
     """Index all visible workloads; resolve ownership by UID, never name prefixes."""
     deployments = {d.get("metadata", {}).get("name"): dict(d, kind="Deployment") for d in scope.get("deployments", [])}
@@ -25,9 +65,19 @@ def index_scope(scope):
             deployments[key] = dict(resource, kind=kind)
             by_uid[uid] = deployments[key]
     pods = defaultdict(list)
+    seen_pods = set()
     for pod in scope.get("pods", []):
+        meta = pod.get('metadata', {})
+        identity = ('uid', meta['uid']) if meta.get('uid') else ('name', meta.get('name', ''))
+        if identity in seen_pods:
+            continue
+        seen_pods.add(identity)
         owner = next((o for o in pod.get("metadata", {}).get("ownerReferences", []) if o.get("controller")), {})
         uid = owner.get("uid")
+        if scope.get('_ownership_pending') and owner.get('kind') == 'Job' and uid not in cron_for_job:
+            # Core progress can precede Job/CronJob lists. Do not invent a
+            # temporary standalone row that will merge into its CronJob.
+            continue
         if owner.get("kind") == "ReplicaSet":
             uid = sets.get(uid) or uid
         elif owner.get("kind") == "Job":

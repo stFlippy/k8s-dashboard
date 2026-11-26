@@ -1,14 +1,13 @@
 """Native widgets matching the web matrix and resource editor."""
+from .tooltips import show_tooltip
 import re
-from pathlib import Path
 from datetime import datetime, timezone
-from PyQt5.QtCore import Qt, QSize, QRect, QRectF, QPointF, QEvent, pyqtSignal
-from PyQt5.QtGui import QColor, QPainter, QPen, QFont, QTextCursor, QFontDatabase
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QLabel,
-    QPushButton, QPlainTextEdit, QHeaderView, QStyledItemDelegate, QMenu, QTableWidget, QTableView, QAbstractItemView, QToolTip, QCheckBox, QFrame, QComboBox, QListView, QApplication, QTabWidget)
+from PyQt5.QtCore import Qt, QRect, QRectF, QPoint, QPointF, QEvent, pyqtSignal
+from PyQt5.QtGui import QColor, QPainter, QPen, QFont, QTextCursor, QRegion
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QLabel, QPushButton, QPlainTextEdit, QHeaderView, QStyledItemDelegate, QMenu, QTableWidget, QTableView, QAbstractItemView, QCheckBox, QFrame, QComboBox, QListView, QApplication, QTabWidget
 
 COLORS = {"Running": "#43B694", "Pending": "#DCAE54", "Failed": "#E56B6E",
-          "Unknown": "#70819d", "Completed": "#729fc7", "Terminating": "#8d94a0", "Restart": "#51A8EA"}
+          "Unknown": "#70819d", "Completed": "#43B694", "Finishing": "#8D94A0", "Terminating": "#8d94a0", "Restart": "#51A8EA", "Scheduled": "#F1D15B"}
 
 WORKLOAD_HELP = {
     "Deployment": "Deployment управляет числом реплик приложения и их обновлением через ReplicaSet.",
@@ -27,7 +26,7 @@ class DisabledHintButton(QPushButton):
     def event(self, event):
         if event.type() == QEvent.Type.MouseButtonPress and not self.isEnabled():
             if self.toolTip():
-                QToolTip.showText(event.globalPos(), self.toolTip(), self)
+                show_tooltip(event.globalPos(), self.toolTip(), self)
             return True
         return super().event(event)
 
@@ -59,19 +58,23 @@ class PodDonut(QWidget):
         self.requesting = False
         self.setToolTip("Загрузка состояний Pod этого Deployment…")
 
-    def set_pods(self, pods, desired=None, *, requesting=False):
-        self.desired = desired
-        self.requesting = requesting
-        self.counts = {}
+    def set_pods(self, pods, desired=None, *, requesting=False, label=''):
+        counts = {}
         for pod in pods:
             status = pod_status(pod)
-            self.counts[status] = self.counts.get(status, 0) + 1
+            counts[status] = counts.get(status, 0) + 1
+        changed = counts != self.counts or desired != self.desired or requesting != self.requesting
+        self.desired = desired
+        self.requesting = requesting
+        if counts != self.counts:
+            self.counts = counts
         summary = f"Готово: {self.counts.get('Running', 0)}. Всего Pod: {sum(self.counts.values())}."
         if desired is not None:
             summary += f" Цель: {desired}."
-        self.setAccessibleName(summary)
-        self.setToolTip(summary + "\n" + ("\n".join(f"{status}: {count}" for status, count in self.counts.items()) or "Pod отсутствуют."))
-        self.update()
+        self.setAccessibleName((label + '. ' if label else '') + summary)
+        self.setToolTip((label + '\n' if label else '') + summary + "\n" + ("\n".join(f"{status}: {count}" for status, count in self.counts.items()) or "Pod отсутствуют."))
+        if changed:
+            self.update()
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -106,8 +109,6 @@ class FullCheckBox(QCheckBox):
     def paintEvent(self, event):
         super().paintEvent(event)
         color = COLORS.get(self.property("status"))
-        if self.objectName() == "recentFilter":
-            color = COLORS["Restart"]
         if color:
             painter = QPainter(self)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -308,6 +309,8 @@ class PodMatrix(QTableWidget):
         self.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
         self.hovered = (-1, -1)
         self.hovered_pod = None
+        self._cell_visuals = {}
+        self._cell_keys = {}
         self._resize_drag = None
         self._row_drag = None
         self.frozen = QTableView(self)
@@ -362,8 +365,20 @@ class PodMatrix(QTableWidget):
             header.blockSignals(blocked)
         self.sync_frozen()
 
+    def frozen_layout_signature(self):
+        return (tuple((self.rowHeight(r), self.isRowHidden(r), self.verticalHeader().visualIndex(r)) for r in range(self.rowCount())),
+                tuple((self.columnWidth(c), self.isColumnHidden(c), self.horizontalHeader().visualIndex(c)) for c in range(self.columnCount())),
+                tuple(getattr(self, 'row_kinds', ())), frozenset(getattr(self, 'group_rows', ())),
+                self.horizontalHeader().height(), self.viewport().geometry())
+
+    def _frozen_layout_key(self):
+        return (self.frozen_layout_signature(), self.horizontalHeader().isVisible(),
+                self.verticalScrollBar().value(), self.horizontalScrollBar().value())
+
     def sync_frozen(self, *_):
         if getattr(self, "_syncing_frozen", False):
+            return
+        if self._frozen_layout_key() == getattr(self, '_frozen_layout_revision', None):
             return
         self._syncing_frozen = True
         kinds = getattr(self, "row_kinds", [])
@@ -407,6 +422,7 @@ class PodMatrix(QTableWidget):
         self.group_headers.setGeometry(self.viewport().geometry())
         self.group_headers.raise_()
         self.group_headers.update()
+        self._frozen_layout_revision = self._frozen_layout_key()
         self._syncing_frozen = False
 
     def group_offset(self, row):
@@ -440,14 +456,51 @@ class PodMatrix(QTableWidget):
         if event.button() == Qt.MouseButton.LeftButton and index.isValid() and self.content_rect(self.visualRect(index), index.row()).contains(event.pos()):
             self.activatedAt.emit(index.row(), index.column(), event.pos())
 
+    def cell_visuals(self, row, col):
+        return self._cell_visuals.get(self._cell_keys.get((row, col)), ())
+
     def _set_hover(self, cell, pod=None):
         if cell == self.hovered and pod == self.hovered_pod:
             return
+        previous = self.hovered
         self.hovered = cell
         self.hovered_pod = pod
-        self.viewport().update()
-        self.frozen.viewport().update()
-        self.horizontalHeader().viewport().update()
+        for view in (self, self.frozen):
+            region = self._hover_region(view, previous, cell)
+            if not region.isEmpty():
+                view.viewport().update(region)
+        if previous[1] != cell[1]:
+            header = self.horizontalHeader()
+            region = QRegion()
+            for col in (previous[1], cell[1]):
+                if 0 < col < self.columnCount() and not header.isSectionHidden(col):
+                    region |= QRegion(QRect(header.sectionViewportPosition(col), 0,
+                                            header.sectionSize(col), header.viewport().height()))
+            region &= QRegion(header.viewport().rect())
+            if not region.isEmpty():
+                header.viewport().update(region)
+
+    def _hover_region(self, view, previous, cell):
+        """Return disjoint damage in the receiving view's own coordinates."""
+        region = QRegion()
+        if previous == cell:
+            row, col = cell
+            if (0 <= row < self.rowCount() and 0 <= col < self.columnCount()
+                    and not view.isRowHidden(row) and not view.isColumnHidden(col)):
+                region |= QRegion(view.visualRect(self.model().index(row, col)))
+        else:
+            # Rows change both cross tint and active-cell border. A column
+            # needs repainting only when its cross tint actually changes.
+            for row in set((previous[0], cell[0])):
+                if 0 <= row < self.rowCount() and not view.isRowHidden(row):
+                    region |= QRegion(QRect(0, view.rowViewportPosition(row),
+                                            view.viewport().width(), view.rowHeight(row)))
+            if previous[1] != cell[1]:
+                for col in set((previous[1], cell[1])):
+                    if 0 < col < self.columnCount() and not view.isColumnHidden(col):
+                        region |= QRegion(QRect(view.columnViewportPosition(col), 0,
+                                                view.columnWidth(col), view.viewport().height()))
+        return region.intersected(QRegion(view.viewport().rect()))
 
     def _resize_edge(self, point):
         if self.columnCount() and abs(point.x()-self.columnWidth(0)) <= 3:
@@ -467,7 +520,7 @@ class PodMatrix(QTableWidget):
                     watched.setCursor(Qt.CursorShape.ArrowCursor)
                     if kind == QEvent.Type.ToolTip:
                         name = self.row_kinds[group]
-                        QToolTip.showText(event.globalPos(), WORKLOAD_HELP.get(name, name), watched)
+                        show_tooltip(event.globalPos(), WORKLOAD_HELP.get(name, name), watched)
                     return True
             if kind in (QEvent.Type.MouseMove, QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease):
                 point = (event.pos() if watched is self.viewport() else
@@ -526,8 +579,8 @@ class PodMatrix(QTableWidget):
 
     def mouseMoveEvent(self, event):
         index = self.indexAt(event.pos())
-        pods = index.data(Qt.ItemDataRole.UserRole) if index.isValid() else None
-        hit = pod_at(self.content_rect(self.visualRect(index), index.row()), event.pos(), len(pods)) if isinstance(pods, list) else None
+        pods = self.cell_visuals(index.row(), index.column()) if index.isValid() else ()
+        hit = pod_at(self.content_rect(self.visualRect(index), index.row()), event.pos(), len(pods)) if pods else None
         self._set_hover((index.row(), index.column()) if index.isValid() else (-1, -1), hit)
         super().mouseMoveEvent(event)
 
@@ -546,10 +599,38 @@ def pod_status(pod):
            ("CrashLoopBackOff", "ImagePullBackOff", "ErrImagePull", "CreateContainerConfigError", "RunContainerError")
            or c.get("state", {}).get("terminated", {}).get("exitCode", 0) != 0 for c in containers):
         return "Failed"
+    regular = pod.get('spec', {}).get('containers', [])
+    names = [container.get('name') for container in regular]
+    states = status.get('containerStatuses', [])
+    by_name = {container.get('name'): container for container in states}
+    if (phase == 'Running' and names and all(names) and len(set(names)) == len(names)
+            and len(by_name) == len(states)
+            and all(name in by_name and by_name[name].get('state', {}).get('terminated', {}).get('exitCode') == 0
+                    for name in names)):
+        return 'Finishing'
     if phase == "Running" and (any(c.get("ready") is False for c in status.get("containerStatuses", [])) or
             any(c.get("type") == "Ready" and c.get("status") != "True" for c in status.get("conditions", []))):
         return "Pending"
     return "Completed" if phase == "Succeeded" else phase
+
+
+CLUSTER_ID_ROLE = int(Qt.ItemDataRole.UserRole) + 40
+
+
+def visual_cluster_boundary(header, logical):
+    """An internal divider belongs to the current visible neighbours."""
+    if logical == 0 or header.isSectionHidden(logical):
+        return False
+    visual = header.visualIndex(logical)
+    for position in range(visual + 1, header.count()):
+        neighbour = header.logicalIndex(position)
+        if neighbour == 0 or header.isSectionHidden(neighbour):
+            continue
+        model = header.model()
+        left = model.headerData(logical, Qt.Orientation.Horizontal, CLUSTER_ID_ROLE)
+        right = model.headerData(neighbour, Qt.Orientation.Horizontal, CLUSTER_ID_ROLE)
+        return left is not None and right is not None and left != right
+    return False
 
 
 class NamespaceHeader(MatrixHeader):
@@ -581,7 +662,7 @@ class NamespaceHeader(MatrixHeader):
                  for part in label.split("\n")]
         painter.drawText(QRect(6, 0, rect.height()-12, rect.width()), Qt.AlignmentFlag.AlignVCenter, "\n".join(lines))
         painter.restore()
-        if self.model().headerData(logical, Qt.Orientation.Horizontal, Qt.ItemDataRole.UserRole):
+        if visual_cluster_boundary(self, logical):
             painter.save()
             painter.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.TextAntialiasing)
             painter.setPen(QColor(colors["input_border"]))
@@ -591,6 +672,11 @@ class NamespaceHeader(MatrixHeader):
 
 def pod_marker_style(pod, deploy_mode=False):
     """Keep filtering activity separate from its temporary visual suppression."""
+    from .matrix_presentation import PodVisual
+    if isinstance(pod, PodVisual):
+        recent = pod.recent and pod.status == 'Running' and not pod.stale and not deploy_mode
+        return (COLORS["Unknown"] if pod.stale else COLORS["Restart"] if recent
+                else COLORS.get(pod.status, COLORS["Unknown"])), recent
     status = pod_status(pod)
     if pod.get("_stale"):
         return COLORS["Unknown"], False
@@ -600,7 +686,7 @@ def pod_marker_style(pod, deploy_mode=False):
 
 class PodDelegate(QStyledItemDelegate):
     def paint(self, painter, option, index):
-        pods = index.data(Qt.ItemDataRole.UserRole)
+        pods = self.parent().cell_visuals(index.row(), index.column())
         # Missing deployments still occupy a visual cell in the matrix.
         if pods is None:
             pods = []
@@ -646,6 +732,13 @@ class PodDelegate(QStyledItemDelegate):
             painter.setBrush(QColor(color))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.drawRoundedRect(area, 4, 4)
+            if pod.schedule is not None:
+                painter.setPen(QPen(QColor('#202630'), 1.4))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawEllipse(QRectF(area).adjusted(3,3,-3,-3))
+                center = area.center()
+                painter.drawLine(center,center+QPoint(0,-3))
+                painter.drawLine(center,center+QPoint(3,1))
             if recent:
                 painter.setPen(QPen(QColor("#FFFFFF"), 1.2))
                 painter.drawArc(QRectF(area).adjusted(3, 3, -3, -3), 35*16, 285*16)
@@ -660,23 +753,30 @@ class PodDelegate(QStyledItemDelegate):
                 painter.drawRoundedRect(area.adjusted(-3, -3, 3, 3), 5, 5)
                 painter.setPen(QPen(QColor(colors["foreground"]), 1))
                 painter.drawRoundedRect(area.adjusted(-2, -2, 2, 2), 4, 4)
-        if index.model().headerData(index.column(), Qt.Orientation.Horizontal, Qt.ItemDataRole.UserRole):
+        if visual_cluster_boundary(matrix.horizontalHeader(), index.column()):
             painter.setPen(QColor(colors["input_border"]))
             painter.drawLine(option.rect.right()-1, option.rect.top(), option.rect.right()-1, option.rect.bottom())
         painter.restore()
 
     def helpEvent(self, event, view, option, index):
-        pods = index.data(Qt.ItemDataRole.UserRole)
+        pods = self.parent().cell_visuals(index.row(), index.column())
         if pods is not None:
             matrix = self.parent()
             area = matrix.content_rect(option.rect, index.row()) if isinstance(matrix, PodMatrix) else option.rect
             hit = pod_at(area, event.pos(), len(pods))
             if hit is not None:
                 pod = pods[hit]
-                meta = pod.get("metadata", {})
-                restarts = sum(c.get("restartCount", 0) for c in pod.get("status", {}).get("containerStatuses", []))
-                QToolTip.showText(event.globalPos(), f"Name: {meta.get('name', '')}\nStatus: {pod_status(pod)}\nRestarts: {restarts}\nCreated: {meta.get('creationTimestamp', '—')}", view)
+                if pod.schedule is not None and hasattr(matrix,'schedules'):
+                    matrix.schedules.watch_tooltip(pod,event.globalPos(),view)
+                else:
+                    if hasattr(matrix,'schedules'): matrix.schedules.tooltip = None
+                    show_tooltip(event.globalPos(), pod.tooltip, view)
                 return True
+        if hasattr(self.parent(), 'schedules'): self.parent().schedules.tooltip = None
+        tip = index.data(Qt.ItemDataRole.ToolTipRole)
+        if tip:
+            show_tooltip(event.globalPos(), tip, view)
+            return True
         return super().helpEvent(event, view, option, index)
 
 
@@ -819,7 +919,18 @@ class CodeEditor(QWidget):
 
     def update_matches(self):
         needle = self.search.text()
-        total = self.toPlainText().casefold().count(needle.casefold()) if needle else 0
+        key = (self.editor.document().revision(), needle)
+        if key != getattr(self, '_search_revision', None):
+            self._search_revision = key
+            text = self.toPlainText() if needle else ''
+            ends = [match.end() for match in re.finditer(re.escape(needle), text, re.IGNORECASE)] if needle else []
+            self._search_ends = []
+            position = units = 0
+            for end in ends:
+                units += len(text[position:end].encode('utf-16-le'))//2
+                self._search_ends.append(units)
+                position = end
+        total = len(self._search_ends)
         self.count.setText(f"0/{total}")
 
     def find_match(self, backwards=False):
@@ -830,8 +941,10 @@ class CodeEditor(QWidget):
             self.editor.find(self.search.text(), flags)
         needle = self.search.text()
         if needle:
-            before = self.toPlainText()[:self.editor.textCursor().selectionEnd()]
-            self.count.setText(f"{before.casefold().count(needle.casefold())}/{self.toPlainText().casefold().count(needle.casefold())}")
+            from bisect import bisect_right
+            self.update_matches()
+            number = bisect_right(self._search_ends, self.editor.textCursor().selectionEnd())
+            self.count.setText(f"{number}/{len(self._search_ends)}")
 
     def setPlainText(self, value):
         self.editor.setPlainText(value)

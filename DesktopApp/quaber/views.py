@@ -23,7 +23,10 @@ def validate_view(value):
     if not isinstance(filters, dict) or any(type(v) is not bool for v in filters.values()):
         raise ValueError("filters должен содержать только логические значения.")
     result["filters"].update({k:v for k,v in filters.items() if k in result["filters"]})
-    for key in ("recentRestartFilter", "problemOnly", "hideFilteredNamespaces"):
+    # Legacy recentRestartFilter is accepted but deliberately no longer controls display.
+    if 'recentRestartFilter' in value and type(value['recentRestartFilter']) is not bool:
+        raise ValueError('Некорректный флаг recentRestartFilter.')
+    for key in ("problemOnly",):
         if key in value:
             if type(value[key]) is not bool:
                 raise ValueError(f"Некорректный флаг {key}.")
@@ -51,6 +54,27 @@ def validate_view(value):
 
 def validate_preferences(value):
     result = copy.deepcopy(value)
+    result.pop('recent', None)
+    from .monitoring import idle_minutes
+    result['monitoring_idle_minutes'] = idle_minutes(result.get('monitoring_idle_minutes'))
+    threads = result.get('cluster_io_threads', 1)
+    result['cluster_io_threads'] = threads if type(threads) is int and 0 <= threads <= 50 else 1
+    if result.get('api_transport') not in ('proxy', 'https'): result['api_transport'] = 'proxy'
+    zones = result.get('controller_timezones',{})
+    if not isinstance(zones,dict): zones = {}
+    from .schedule import load_zone
+    offsets = {}
+    for cid, zone in zones.items():
+        if isinstance(cid, str) and isinstance(zone, str):
+            try:
+                load_zone(zone)
+                offsets[cid] = zone
+            except ValueError:
+                pass
+    result['controller_timezones'] = offsets
+    for label_preference in ('report_label_keys', 'comparison_label_keys'):
+        labels = result.get(label_preference, [])
+        result[label_preference] = sorted(set(k for k in labels if isinstance(k, str) and 0 < len(k) <= 317))[:512] if isinstance(labels, list) else []
     ranges = {"deployment_width": (100, 500), "header_height": (54, 360), "sidebar_width": (160, 280),
               "log_height": (100, 1000), "refresh_ms": (0, 300000)}
     for key, (low, high) in ranges.items():
@@ -88,13 +112,39 @@ def validate_preferences(value):
 
 def default_view() -> dict:
     return {"id": "default", "name": "Основная", "filters": {"Running": True, "Pending": True, "Failed": True, "Unknown": True},
-            "recentRestartFilter": True, "problemOnly": False, "hideFilteredNamespaces": True,
+            "problemOnly": False,
             "selectedDeployments": None, "selectedNamespaces": None, "selectedClusterIds": None,
             "knownDeployments": None, "knownNamespaces": None, "knownClusterIds": None,
             "namespaceOrder": [], "deploymentOrder": []}
 
 
 class MatrixViews:
+    def reconcile_connections(self, identifiers):
+        changed = False
+        for view in self.views:
+            old = view.get('selectedClusterIds')
+            known = view.get('knownClusterIds')
+            if old is not None:
+                value = [identifier for identifier in old if identifier in identifiers]
+                # Extend an explicit former "all" selection after replacement,
+                # but never broaden a deliberately narrow connection scope.
+                if known and set(known).issubset(old):
+                    value += sorted(set(identifiers) - set(known) - set(value))
+                if old != value:
+                    view['selectedClusterIds'] = value
+                    changed = True
+            if known != sorted(identifiers):
+                view['knownClusterIds'] = sorted(identifiers)
+                changed = True
+            order = view.get('namespaceOrder', [])
+            filtered = [key for key in order if key.split('/', 1)[0] in identifiers]
+            if order != filtered:
+                view['namespaceOrder'] = filtered
+                changed = True
+        if changed:
+            self.persist()
+        return changed
+
     def __init__(self, preferences: dict):
         self.preferences = preferences
         raw = validate_preferences(preferences).get("views")
@@ -112,18 +162,13 @@ class MatrixViews:
         self.preferences["active_view"] = self.active_id
 
     def observe_scopes(self, scopes):
-        """Newly discovered objects start visible; explicit exclusions stay excluded."""
+        """Track available values without broadening explicit user selections."""
         changed = False
         for view in self.views:
             for suffix, values in scopes.items():
                 known_key, selected_key = "known"+suffix, "selected"+suffix
                 known = view.get(known_key)
-                if known is not None and view.get(selected_key) is not None:
-                    added = sorted(set(values)-set(known))
-                    if added:
-                        view[selected_key] = list(dict.fromkeys(view[selected_key]+added))
-                        changed = True
-                updated = sorted(set(known or []) | set(values))
+                updated = sorted(set(values))
                 if known != updated:
                     view[known_key] = updated
                     changed = True
@@ -137,8 +182,9 @@ class MatrixViews:
         name = name.strip()
         if not name or len(name) > 80 or any(view["name"].casefold() == name.casefold() for view in self.views):
             raise ValueError("Название вкладки пустое, слишком длинное или уже используется.")
-        view = copy.deepcopy(self.active)
-        view.update(id=str(uuid.uuid4()), name=name)
+        view = default_view()
+        view.update(id=str(uuid.uuid4()), name=name, selectedClusterIds=[],
+                    knownClusterIds=list(self.active.get('knownClusterIds') or []))
         self.views.append(view)
         self.active_id = view["id"]
         self.persist()

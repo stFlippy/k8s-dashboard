@@ -10,7 +10,8 @@ from PyQt5.QtCore import QPoint, QPointF, Qt, QEvent
 from PyQt5.QtGui import QMouseEvent
 from PyQt5.QtTest import QTest
 
-from quaber.inventory import APP_LABEL, CSV_FIELDS, inventory_record, collect_inventory, compare_versions, write_inventory
+from quaber.inventory import APP_LABEL, CSV_FIELDS, inventory_record, inventory_row, collect_inventory, compare_versions
+from quaber.dump_export import export_dump
 from quaber.ui import MetricChart
 from test_ux import ShellFixture, Deferred
 from test_storage import CONFIG
@@ -57,21 +58,23 @@ class InventoryTests(unittest.TestCase):
             if path.endswith("/deployments"):
                 return [deployment()]
             raise PermissionError("Forbidden cronjobs")
-        api.list_pages.side_effect = read
+        api.snapshot_list.side_effect = read
+        api.all_namespace_resources.side_effect = lambda cid, kind: ([dict(deployment(), metadata=dict(deployment()['metadata'], namespace='test'))]
+            if kind == 'deployment' else (_ for _ in ()).throw(PermissionError('Forbidden cronjobs')))
         result = collect_inventory(api, {"id": "c", "name": "Cluster", "server": "https://api.test"})
         self.assertEqual(result["namespace_count"], 1)
         self.assertEqual(len(result["records"]), 1)
         self.assertIn("test / CronJob", result["errors"][0])
         api.request.assert_not_called()
 
-    def test_csv_format_unicode_quoting_and_log_without_credentials(self):
+    def test_csv_export_unicode_quoting_without_credentials_or_log(self):
         data = snapshot("c", branch='release,"test"')
         data["records"][0]["deployed_by"] = "Владимир"
         data["encryptedKubeconfig"] = "credential-must-not-leak"
         data["errors"] = ["other / CronJob: Forbidden"]
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder)/"снимок.csv"
-            _, log = write_inventory(path, [data])
+            _, log = export_dump(path, [inventory_row(data, record) for record in data['records']])
             self.assertTrue(path.read_bytes().startswith(b"\xef\xbb\xbf"))
             with path.open(encoding="utf-8-sig", newline="") as stream:
                 reader = csv.DictReader(stream)
@@ -79,10 +82,11 @@ class InventoryTests(unittest.TestCase):
                 rows = list(reader)
             self.assertEqual(rows[0]["branch"], 'release,"test"')
             self.assertEqual(rows[0]["deployed by"], "Владимир")
-            self.assertIn("НЕПОЛНЫЙ СНИМОК", Path(log).read_text(encoding="utf-8"))
-            self.assertNotIn("credential-must-not-leak", path.read_text(encoding="utf-8-sig")+Path(log).read_text(encoding="utf-8"))
+            self.assertIsNone(log)
+            self.assertFalse(path.with_suffix('.log').exists())
+            self.assertNotIn("credential-must-not-leak", path.read_text(encoding="utf-8-sig"))
             with self.assertRaises(ValueError):
-                write_inventory(Path(folder)/"bad.log", [data])
+                export_dump(Path(folder)/"bad.log", [])
 
     def test_versions_match_application_label_across_resource_names_and_namespaces(self):
         first, second = snapshot("a", "orders-blue"), snapshot("b", "orders-green")
@@ -159,11 +163,21 @@ class NewPageTests(ShellFixture, unittest.TestCase):
 
     def test_versions_page_exposes_arbitrary_labels_and_marks_actual_differences(self):
         clusters = self.clusters()
-        self.cache(clusters)
-        self.window.navigate_workspace(self.window.tabs.indexOf(self.window.versions_page))
+        def collect(api, cluster, progress=None):
+            data = snapshot(cluster['id'])
+            return dict(data,cluster_name=cluster['name'],server=cluster['server'])
+        with patch('quaber.inventory.collect_inventory',side_effect=collect):
+            self.window.navigate_workspace(self.window.tabs.indexOf(self.window.versions_page))
+            self.window.versions_page.refresh_data(force=True)
+            self.wait()
+            self.assertFalse(self.window.inventory.operations)
+            self.assertEqual([self.window.inventory.state(c['id']) for c in clusters],['READY','READY'])
         page = self.window.versions_page
         self.app.processEvents()
-        self.assertEqual(page.label_keys, ["app.kubernetes.io/version"])
+        self.assertEqual(page.label_keys, [])
+        self.assertEqual(page.namespaces.ids(), set())
+        page.namespaces.selected = None
+        page.set_label_keys(["app.kubernetes.io/version"])
         self.assertIn("GIT_BRANCH", page.available_labels)
         self.assertEqual(page.table.item(0, 0).data(Qt.ItemDataRole.UserRole), "Совпадает")
         self.window.inventory.get(clusters[1]["id"])["records"][0]["labels"]["GIT_BRANCH"] = "release"
@@ -171,7 +185,7 @@ class NewPageTests(ShellFixture, unittest.TestCase):
         page.render()
         self.assertEqual(page.table.item(0, 0).data(Qt.ItemDataRole.UserRole), "Различается")
         self.assertFalse(self.window.shell_actions.mode.isEnabled())
-        self.assertEqual([button.text() for button in self.window.nav_buttons][-2:], ["Dumps", "Сверка версий"])
+        self.assertEqual([button.text() for button in self.window.nav_buttons][-3:], ["Dumps", "Сверка версий", "Events"])
         with patch.object(page, "refresh_data") as refreshed:
             self.window.shell_actions.refresh()
         refreshed.assert_called_once_with(force=True)
@@ -187,6 +201,8 @@ class NewPageTests(ShellFixture, unittest.TestCase):
         self.cache(clusters)
         self.window.navigate_workspace(self.window.tabs.indexOf(self.window.versions_page))
         page = self.window.versions_page
+        page.namespaces.selected = None
+        page.set_label_keys(["app.kubernetes.io/version"])
         second = self.window.inventory.get(clusters[1]["id"])
         for theme in ("light", "dark"):
             with self.subTest(theme=theme):
@@ -219,6 +235,7 @@ class NewPageTests(ShellFixture, unittest.TestCase):
         cluster = self.clusters()[0]
         deferred = Deferred()
         service = self.window.inventory
+        service.set_demanded(True)
         with patch.object(self.window, "background", deferred):
             service.refresh({cluster["id"]})
             service.refresh({cluster["id"]}, force=True)
@@ -230,22 +247,22 @@ class NewPageTests(ShellFixture, unittest.TestCase):
 
 class AdministratorPolicyTests(ShellFixture, unittest.TestCase):
     def test_reader_or_unconfirmed_user_cannot_activate_mode(self):
-        self.api.is_cluster_administrator.return_value = False
+        self.api.request.return_value = {'status': {'allowed': False}}
         self.open_panel("deployment")
         mode = self.window.shell_actions.mode
         self.assertFalse(mode.isEnabled())
-        self.assertIn("ограничения прав", mode.toolTip())
+        self.assertIn("не разрешены для этой цели", mode.toolTip())
         with patch("quaber.ui.confirm") as confirm:
             mode.click()
         confirm.assert_not_called()
         self.assertTrue(self.window.preferences["read_only"])
-        self.api.is_cluster_administrator.side_effect = ConnectionError("offline")
+        self.api.request.side_effect = ConnectionError("offline")
         self.window.admin_access.check("c", force=True)
         self.wait()
         self.assertFalse(mode.isEnabled())
         self.assertIn("Не удалось подтвердить", mode.toolTip())
-        self.api.is_cluster_administrator.side_effect = None
-        self.api.is_cluster_administrator.return_value = True
+        self.api.request.side_effect = None
+        self.api.request.return_value = {'status': {'allowed': True}}
         self.window.admin_access.check("c", force=True)
         self.wait()
         self.assertTrue(mode.isEnabled())
@@ -269,7 +286,7 @@ class AdministratorPolicyTests(ShellFixture, unittest.TestCase):
     def test_rights_are_rechecked_after_confirmation_and_before_mutation(self):
         panel = self.open_panel("deployment")
         self.assertTrue(self.window.shell_actions.mode.isEnabled())
-        self.api.is_cluster_administrator.return_value = False
+        self.api.request.return_value = {'status': {'allowed': False}}
         with patch("quaber.ui.confirm", return_value=True):
             self.window.shell_actions.mode.click()
             self.wait()
@@ -311,9 +328,9 @@ class AdministratorPolicyTests(ShellFixture, unittest.TestCase):
 
     def test_local_mode_revocation_during_rights_check_prevents_write(self):
         panel = self.open_panel("deployment")
-        panel.background = deferred = Deferred()
+        panel.background.background = deferred = Deferred()
         self.window.set_read_only(False)
-        self.api.is_cluster_administrator.side_effect = lambda cid: (self.window.set_read_only(True), True)[1]
+        self.api.request.side_effect = lambda *args, **kwargs: (self.window.set_read_only(True), {'status': {'allowed': True}})[1]
         panel._apply_scale(copy.deepcopy(panel.resource), 2)
         with patch("quaber.ui.error"):
             deferred.finish(execute=True)

@@ -25,3 +25,16 @@ class MetricHistory:
     def window(self, identity, container, seconds, now=None):
         now = time.time() if now is None else now
         return [row for row in self.series.get((*identity, container), ()) if now-seconds <= row[0] <= now]
+
+    def merge(self, identity, series, now=None):
+        now = time.time() if now is None else now
+        for name, incoming in series.items():
+            key = (*identity, name)
+            points = {row[0]: row for row in incoming if now-self.retention_seconds <= row[0] <= now}
+            # A concurrent live sample remains authoritative at the same instant.
+            points.update({row[0]: row for row in self.series.get(key, ())
+                           if now-self.retention_seconds <= row[0] <= now})
+            self.series[key] = deque(sorted(points.values())[-720:], maxlen=720)
+            self.series.move_to_end(key)
+        while len(self.series) > 1024:
+            self.series.popitem(last=False)

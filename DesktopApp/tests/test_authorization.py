@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 from quaber.authorization import ClusterAuthorization, AuthorizationRequired
 from quaber.kubernetes import Kubernetes
 from quaber.storage import UserStore
+from quaber.request_policy import RequestPolicy
 from test_storage import CONFIG
 
 
@@ -40,13 +41,16 @@ class AuthorizationTests(unittest.TestCase):
                 self.assertNotIn("private-password", str(failure.exception))
             login.assert_called_once()
         self.store.update_logins({self.cluster["id"]: CONFIG})
+        account = self.store.accounts()[0]
+        self.store.put_account(account['name'], account['username'], 'corrected-password',
+                               account_id=account['id'], remember_password=True)
         current = self.store.clusters()[0]
         with patch("quaber.authorization.locate_kubectl", return_value=Path("kubectl.exe")), patch("quaber.authorization.login", return_value=CONFIG) as login:
             self.auth.renew(current["id"], current["encryptedKubeconfig"])
             login.assert_called_once()
 
     def test_401_renews_then_retries_original_request_once(self):
-        api = Kubernetes(self.store, self.proxy)
+        api = Kubernetes(self.store, self.proxy, policy=RequestPolicy())
         response = Mock()
         response.__enter__ = Mock(return_value=response)
         response.__exit__ = Mock(return_value=False)
@@ -61,7 +65,8 @@ class AuthorizationTests(unittest.TestCase):
 
     def test_no_password_notifies_ui_and_does_not_attempt_login(self):
         self.store.put_cluster("Test", self.cluster["server"], "alice", None, cluster_id=self.cluster["id"], remember_password=False)
-        api = Kubernetes(self.store, self.proxy)
+        self.store = UserStore(self.store.root)  # The session-only secret ends at restart.
+        api = Kubernetes(self.store, self.proxy, policy=RequestPolicy())
         api.authorization_required = Mock()
         api.opener = Mock()
         api.opener.open.side_effect = urllib.error.HTTPError("http://localhost", 401, "Unauthorized", {}, io.BytesIO())
@@ -72,7 +77,7 @@ class AuthorizationTests(unittest.TestCase):
         api.authorization_required.assert_called_once_with(self.cluster["id"])
 
     def test_rbac_403_does_not_trigger_login(self):
-        api = Kubernetes(self.store, self.proxy)
+        api = Kubernetes(self.store, self.proxy, policy=RequestPolicy())
         api.authorization_required = Mock()
         api.opener = Mock()
         api.opener.open.side_effect = urllib.error.HTTPError("http://localhost", 403, "Forbidden", {}, io.BytesIO())

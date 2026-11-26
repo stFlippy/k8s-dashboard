@@ -6,6 +6,7 @@ from PyQt5.QtSvg import QSvgRenderer
 from PyQt5.QtCore import Qt
 
 PATHS = {
+    "events": '<path d="M4 3h16v18H4zM8 7h9M8 12h9M8 17h9M6 7h.01M6 12h.01M6 17h.01"/>',
     "workloads": '<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>',
     "quota": '<path d="M3 21h18M5 17V9h3v8m4 0V3h3v14m4 0v-6h3v6"/>',
     "config": '<path d="M6 2h9l4 4v16H6zM14 2v6h5M9 12h7M9 16h7"/>',

@@ -2,6 +2,8 @@
 import hashlib
 from importlib.metadata import PackageNotFoundError, distributions, version
 import json
+import os
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 
@@ -72,10 +74,25 @@ def inventory(root):
 
     files = {str(path.relative_to(root).as_posix()): hashlib.sha256(path.read_bytes()).hexdigest()
              for path in sorted(root.rglob("*")) if path.is_file() and path.name not in ("release-manifest.json", "sbom.json")}
-    components = [{"type": "library", "name": dist.metadata["Name"], "version": dist.version}
-                  for dist in sorted(distributions(), key=lambda d: d.metadata["Name"].lower())]
+    # Build-environment inventory is distinct from components actually shipped.
+    runtime_names = {'pyqt5', 'pyqt5-qt5', 'pyqt5-sip', 'pyyaml', 'cryptography', 'cffi'}
+    environment = [{"type": "library", "name": dist.metadata["Name"], "version": dist.version}
+                   for dist in sorted(distributions(), key=lambda d: d.metadata["Name"].lower())]
+    components = [d for d in environment if d['name'].lower() in runtime_names]
+    components.append({'type': 'library', 'name': 'CPython', 'version': sys.version.split()[0]})
+    components.append({'type': 'library', 'name': 'Roboto', 'description': 'Bundled font; see assets/fonts/OFL.txt'})
+    import ssl
+    components.append({'type': 'library', 'name': 'OpenSSL (CPython ssl)',
+                       'version': ssl.OPENSSL_VERSION,
+                       'description': 'Native libssl/libcrypto; cryptography also embeds its own OpenSSL'})
+    from cryptography.hazmat.backends.openssl.backend import backend
+    components.append({'type': 'library', 'name': 'OpenSSL (cryptography)',
+                       'version': backend.openssl_version_text()})
+    components.append({'type': 'library', 'name': 'Microsoft Visual C++ runtime',
+                       'description': 'Bundled VCRUNTIME/MSVCP DLLs; exact files and hashes in manifest'})
     (root / "sbom.json").write_text(json.dumps({"bomFormat": "CycloneDX", "specVersion": "1.5", "version": 1,
-                                               "components": components}, indent=2), encoding="utf-8")
+                                               "components": components,
+                                               "properties": [{"name": "quaber:scope", "value": "Bundled runtime; build environment listed separately in release-manifest.json"}]}, indent=2), encoding="utf-8")
     files["sbom.json"] = hashlib.sha256((root / "sbom.json").read_bytes()).hexdigest()
     runtime = {
         "python": sys.version,
@@ -88,9 +105,25 @@ def inventory(root):
         "qt_plugins": QLibraryInfo.location(QLibraryInfo.PluginsPath),
         "sip_module": sip.__file__,
     }
-    (root / "release-manifest.json").write_text(
-        json.dumps({"runtime": runtime, "sha256": files}, indent=2), encoding="utf-8"
-    )
+    source = Path(__file__).parent
+    source_files = [source / 'main.py', source / 'release_manifest.py', source / 'build_windows.ps1',
+                    source / 'requirements.lock', *sorted((source / 'quaber').rglob('*.py')),
+                    *sorted((source / 'packaging').glob('*.py')),
+                    *sorted((source / 'packaging').glob('*.ps1')),
+                    *sorted((source / 'packaging').glob('*.json')), source / 'packaging/Quaber.spec']
+    report_dir = os.environ.get('QUABER_BUILD_REPORT')
+    exclusions = (json.loads((Path(report_dir) / 'exclusions.json').read_text(encoding='utf-8'))
+                  if report_dir else {'profile': 'unclassified', 'groups': [], 'files': []})
+    (root / "release-manifest.json").write_text(json.dumps({
+        'created_utc': datetime.now(timezone.utc).isoformat(),
+        'profile': os.environ.get('QUABER_BUILD_PROFILE', 'unclassified'),
+        'source_sha256': {p.relative_to(source).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+                          for p in source_files},
+        'build_environment': environment, 'exclusions': exclusions,
+        'payload_bytes_excluding_manifest': sum((root / p).stat().st_size for p in files),
+        'packaging': {'mode': 'onedir', 'contents_directory': '.', 'optimize': 0,
+                      'strip': False, 'upx': False, 'zip': 'DEFLATE level 9'},
+        'runtime': runtime, 'sha256': files}, indent=2), encoding='utf-8')
 
 
 if __name__ == "__main__":

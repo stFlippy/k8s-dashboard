@@ -66,9 +66,11 @@ class NamespacePageTests(ShellFixture, unittest.TestCase):
         cluster, source = self.cache()
         service = self.window.inventory
         deferred = Deferred()
+        service.set_demanded(True)
         with patch.object(self.window, 'background', deferred):
             service.refresh({cluster['id']}, force=True)
-            deferred.finish(failure='Forbidden')
+            self.assertEqual(len(deferred.jobs),1)
+            deferred.finish(job_id=deferred.jobs[0].id, failure='Forbidden')
         failed = service.get(cluster['id'])
         self.assertEqual(set(failed['namespaces']), {'dev', 'prod', 'empty'})
         scopes = namespace_snapshots([failed, data('other')], {(cluster['id'], 'dev'), ('other', 'dev')})
@@ -110,13 +112,14 @@ class NamespacePageTests(ShellFixture, unittest.TestCase):
         page.render()
         self.assertEqual(page.table.item(0, 0).data(Qt.ItemDataRole.UserRole), 'Один namespace')
 
-    def test_export_captures_visible_table_rows_before_save_dialog(self):
+    def test_export_captures_all_selected_cluster_records_before_save_dialog(self):
         cluster, source = self.cache()
         page = self.window.dumps_page
         self.window.navigate_workspace(self.window.tabs.indexOf(page))
         page.table.item(0, 5).setText('visible-branch')
         page.table.topLevelItem(1).setHidden(True)
-        expected = [page.table.item(0, column).text() for column in range(9)]
+        from quaber.inventory import inventory_row
+        expected = [list(map(str, inventory_row(source, record))) for record in source['records']]
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder)/'dump.csv'
             def choose(*args):
@@ -128,6 +131,7 @@ class NamespacePageTests(ShellFixture, unittest.TestCase):
             with path.open(encoding='utf-8-sig', newline='') as stream:
                 reader = csv.reader(stream)
                 self.assertEqual(next(reader), list(CSV_FIELDS))
-                self.assertEqual(list(reader), [expected])
+                self.assertEqual(list(reader), expected)
             self.assertFalse(path.with_suffix('.log').exists())
-            self.assertIn('строк: 1', page.status.text())
+            page.render()
+            self.assertIn(f'строк: {len(expected)}', page.export_result.text())

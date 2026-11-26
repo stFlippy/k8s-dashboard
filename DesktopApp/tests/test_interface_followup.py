@@ -18,7 +18,18 @@ class InterfaceFollowupTests(ShellFixture, unittest.TestCase):
         gate = threading.Event()
         self.addCleanup(gate.set)
         self.api.namespaces.return_value = ["ns"]
-        self.api.list_resources.side_effect = lambda *args: (gate.wait(3), [])[1]
+        self.window.views.active.update(selectedClusterIds=[record['id']], selectedNamespaces=['ns'])
+        def route(cid, kind, namespace):
+            core = {'deployment': [self.deployment], 'pod': [self.pod],
+                    'replicaset': self.api.replica_sets.return_value}
+            if kind in core:
+                return copy.deepcopy(core[kind])
+            gate.wait(3)
+            return []
+        self.api.list_resources.side_effect = route
+        self.api.all_namespace_resources.side_effect = lambda cid, kind: route(cid, kind, 'ns')
+        from quaber.ui import MainWindow
+        self.window.refresh = MainWindow.refresh.__get__(self.window, MainWindow)
         self.window._load_initial_matrix()
         deadline = time.monotonic()+2
         while self.window.matrix.rowCount() == 0 and time.monotonic() < deadline:
@@ -26,6 +37,8 @@ class InterfaceFollowupTests(ShellFixture, unittest.TestCase):
         self.assertGreater(self.window.matrix.rowCount(), 0)
         self.assertTrue(self.window.loading_matrix)
         self.assertTrue(self.window.snapshot[record["id"]]["namespaces"]["ns"]["_loading"])
+        for kind in ('deployment','pod','replicaset'):
+            self.assertEqual(sum(call.args[1] == kind for call in self.api.all_namespace_resources.call_args_list),1)
         gate.set()
         self.wait()
         self.assertNotIn("_loading", self.window.snapshot[record["id"]]["namespaces"]["ns"])
@@ -101,7 +114,9 @@ class InterfaceFollowupTests(ShellFixture, unittest.TestCase):
         self.assertIs(panel.yaml_editor.toolbar.itemAt(reload_index+1).widget(), panel.yaml_notice)
         search_index = panel.yaml_editor.toolbar.indexOf(panel.yaml_editor.search_button)
         self.assertIs(panel.yaml_editor.toolbar.itemAt(search_index+1).widget(), panel.yaml_save)
+        self.deployment = changed
         panel.reload_yaml()
+        self.wait()
         self.assertFalse(panel.yaml_reload.property("primary"))
 
     def test_logs_reopen_with_autoscrolling_and_previous_uses_api_flag(self):
@@ -115,11 +130,19 @@ class InterfaceFollowupTests(ShellFixture, unittest.TestCase):
         QTest.qWait(20)
         self.assertTrue(panel.log_view.follow.isChecked())
         self.assertEqual(panel.log_view.export_button.text(), "Сохранить log…")
+        self.pod.setdefault('status',{})['containerStatuses'] = [dict(name='app',restartCount=1,containerID='synthetic://2')]
+        panel.log_view.update_resource(self.pod)
+        self.wait()
+        self.assertEqual(panel.log_view.previous.availability,'AVAILABLE')
         panel.log_view.previous.setChecked(True)
         self.wait()
         self.api.logs.assert_called_with("c", "ns", "app-pod", "app", True, 1000)
 
     def test_terminal_navigation_targets_the_selected_pod_and_uid(self):
+        from test_storage import CONFIG
+        record = self.window.store.put_cluster('Production', 'https://example.test:6443', 'alice', CONFIG)
+        record['id'] = 'c'
+        self.window.store.save_clusters([record])
         second = copy.deepcopy(self.pod)
         second["metadata"].update(name="other-pod", uid="22222222-2222-2222-2222-222222222222")
         pods = {self.pod["metadata"]["name"]: self.pod, "other-pod": second}
@@ -128,19 +151,18 @@ class InterfaceFollowupTests(ShellFixture, unittest.TestCase):
         self.api.replica_sets.return_value = [{"metadata": {"uid": "rs", "ownerReferences": [{"kind": "Deployment", "uid": "d", "controller": True}]}}]
         self.api.resource.side_effect = lambda cid, kind, ns, name: self.deployment if kind == "deployment" else pods[name]
         self.api.store.operation.side_effect = lambda *args, **kwargs: nullcontext()
-        self.api.proxy.execute.return_value = ("checked", "")
-        with patch.object(self.window.store, "clusters", return_value=[{"id": "c", "name": "Production", "enabled": True}]):
-            self.window.open_resource("c", "pod", "ns", "app-pod", "Terminal")
-            self.wait()
-            old = self.window._resource_panel
-            self.window.set_read_only(False)
-            index = old.nav_pod.findData("other-pod")
-            old.nav_pod.setCurrentIndex(index)
-            old.nav_pod.activated.emit(index)
-            old.console_input.setText("date")
-            old.run_console()
-            self.api.proxy.execute.assert_not_called()
-            self.wait()
+        self.api.execute_pod.return_value = ("checked", "")
+        self.window.open_resource("c", "pod", "ns", "app-pod", "Terminal")
+        self.wait()
+        old = self.window._resource_panel
+        self.window.set_read_only(False)
+        index = old.nav_pod.findData("other-pod")
+        old.nav_pod.setCurrentIndex(index)
+        old.nav_pod.activated.emit(index)
+        old.console_input.setText("date")
+        old.run_console()
+        self.api.execute_pod.assert_not_called()
+        self.wait()
         current = self.window._resource_panel
         self.assertEqual(current._opened_identity, ("c", "pod", "ns", "other-pod", second["metadata"]["uid"]))
         self.assertEqual(current.nav_pod.currentData(), "other-pod")
@@ -151,12 +173,24 @@ class InterfaceFollowupTests(ShellFixture, unittest.TestCase):
             current.run_console()
             self.wait()
         confirmation.assert_not_called()
-        self.api.proxy.execute.assert_called_once_with(self.api.cluster.return_value, "ns", "other-pod", "app", "printf checked")
+        self.assertEqual(self.api.execute_pod.call_count, 1)
+        call = self.api.execute_pod.call_args
+        self.assertEqual(call.args, ('c', 'ns', 'other-pod', second['metadata']['uid'], 'app', 'printf checked'))
+        from quaber.write_guard import WritePermit
+        self.assertIsInstance(call.kwargs['permit'], WritePermit)
+        self.assertEqual(call.kwargs['permit'].intent.action, 'exec')
+        self.assertEqual(call.kwargs['permit'].intent.identity, current._opened_identity)
+        from quaber.container_instance import capture_instance
+        from quaber.write_guard import parameter_digest
+        instance = capture_instance(second,'app')
+        self.assertEqual(call.kwargs['expected_instance'],instance)
+        self.assertEqual(call.kwargs['permit'].intent.parameters,parameter_digest(
+            {'container':'app','command':'printf checked','instance':instance.parameters()}))
 
     def test_old_poll_cannot_replace_resource_after_write(self):
         panel = self.open_panel("deployment")
         queue = Deferred()
-        panel.background = queue
+        panel.background.background = queue
         old = copy.deepcopy(panel.resource)
         panel.reload_deployment_pods()
         changed = copy.deepcopy(old)
@@ -175,7 +209,7 @@ class InterfaceFollowupTests(ShellFixture, unittest.TestCase):
         panel._apply_scale(copy.deepcopy(panel.resource), 2)
         self.api.scale.assert_not_called()
 
-    def test_empty_events_are_explicit_and_card_is_auto_refreshed(self):
+    def test_empty_events_are_explicit_and_changed_card_reports_update(self):
         panel = self.open_panel("pod")
         events = next(panel.tabs.widget(i) for i in range(panel.tabs.count()) if panel.tabs.tabText(i) == "События")
         panel.tabs.setCurrentWidget(events)
@@ -183,7 +217,9 @@ class InterfaceFollowupTests(ShellFixture, unittest.TestCase):
         self.assertEqual(events.rowCount(), 0)
         self.assertEqual(events.empty_label.text(), "Событий нет.")
         self.assertTrue(events.empty_label.isVisible())
-        panel._adopt_live(copy.deepcopy(panel.resource))
+        changed = copy.deepcopy(panel.resource)
+        changed['metadata']['resourceVersion'] = 'next-version'
+        panel._adopt_live(changed)
         self.assertIn("карточка обновлена", self.window.statusBar().currentMessage())
 
 
