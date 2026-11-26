@@ -1,0 +1,4 @@
+interface:
+  display_name: "Quaber: сборка Windows"
+  short_description: "Сборка baseline и conservative в Builds"
+  default_prompt: "Используй $quaber-build: собери baseline и conservative-candidate из текущего DesktopApp в новую папку Builds и проверь артефакты и нативный запуск."

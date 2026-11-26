@@ -23,3 +23,11 @@ build-artifacts-*/
 /Addons/kubectl-real.exe
 /Addons/kubectl-login.json
 /Addons/certs/
+
+# Generated dependencies and historical local test evidence (may contain UserData).
+/offline-deps/
+/dependency-audit.json
+/reports/*
+!/reports/lab-load-2026-11-27/
+/reports/lab-load-2026-11-27/*
+!/reports/lab-load-2026-11-27/published/

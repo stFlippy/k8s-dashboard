@@ -4,6 +4,12 @@ dist/
 release/
 *.tsbuildinfo
 coverage/
+/.venv/
+**/__pycache__/
+*.pyc
+/build/
+/Builds/
+/DesktopApp/Builds/
 
 # Local runtime settings and private data.
 .env

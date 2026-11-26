@@ -1,0 +1,535 @@
+{
+  "lock_sha256": "a3b99e8068d819864a30410b2a5218661d38a429a45fe304fe320f39dadd64f0",
+  "qt_paths": [
+    "PyQt5/Qt5/bin/MSVCP140.dll",
+    "PyQt5/Qt5/bin/MSVCP140_1.dll",
+    "PyQt5/Qt5/bin/Qt5Core.dll",
+    "PyQt5/Qt5/bin/Qt5DBus.dll",
+    "PyQt5/Qt5/bin/Qt5Gui.dll",
+    "PyQt5/Qt5/bin/Qt5Network.dll",
+    "PyQt5/Qt5/bin/Qt5Qml.dll",
+    "PyQt5/Qt5/bin/Qt5QmlModels.dll",
+    "PyQt5/Qt5/bin/Qt5Quick.dll",
+    "PyQt5/Qt5/bin/Qt5Svg.dll",
+    "PyQt5/Qt5/bin/Qt5WebSockets.dll",
+    "PyQt5/Qt5/bin/Qt5Widgets.dll",
+    "PyQt5/Qt5/bin/VCRUNTIME140.dll",
+    "PyQt5/Qt5/bin/VCRUNTIME140_1.dll",
+    "PyQt5/Qt5/bin/d3dcompiler_47.dll",
+    "PyQt5/Qt5/bin/libEGL.dll",
+    "PyQt5/Qt5/bin/libGLESv2.dll",
+    "PyQt5/Qt5/bin/opengl32sw.dll",
+    "PyQt5/Qt5/plugins/generic/qtuiotouchplugin.dll",
+    "PyQt5/Qt5/plugins/iconengines/qsvgicon.dll",
+    "PyQt5/Qt5/plugins/imageformats/qgif.dll",
+    "PyQt5/Qt5/plugins/imageformats/qicns.dll",
+    "PyQt5/Qt5/plugins/imageformats/qico.dll",
+    "PyQt5/Qt5/plugins/imageformats/qjpeg.dll",
+    "PyQt5/Qt5/plugins/imageformats/qsvg.dll",
+    "PyQt5/Qt5/plugins/imageformats/qtga.dll",
+    "PyQt5/Qt5/plugins/imageformats/qtiff.dll",
+    "PyQt5/Qt5/plugins/imageformats/qwbmp.dll",
+    "PyQt5/Qt5/plugins/imageformats/qwebp.dll",
+    "PyQt5/Qt5/plugins/platforms/qminimal.dll",
+    "PyQt5/Qt5/plugins/platforms/qoffscreen.dll",
+    "PyQt5/Qt5/plugins/platforms/qwebgl.dll",
+    "PyQt5/Qt5/plugins/platforms/qwindows.dll",
+    "PyQt5/Qt5/plugins/platformthemes/qxdgdesktopportal.dll",
+    "PyQt5/Qt5/plugins/styles/qwindowsvistastyle.dll",
+    "PyQt5/Qt5/translations/qt_ar.qm",
+    "PyQt5/Qt5/translations/qt_bg.qm",
+    "PyQt5/Qt5/translations/qt_ca.qm",
+    "PyQt5/Qt5/translations/qt_cs.qm",
+    "PyQt5/Qt5/translations/qt_da.qm",
+    "PyQt5/Qt5/translations/qt_de.qm",
+    "PyQt5/Qt5/translations/qt_en.qm",
+    "PyQt5/Qt5/translations/qt_es.qm",
+    "PyQt5/Qt5/translations/qt_fa.qm",
+    "PyQt5/Qt5/translations/qt_fi.qm",
+    "PyQt5/Qt5/translations/qt_fr.qm",
+    "PyQt5/Qt5/translations/qt_gd.qm",
+    "PyQt5/Qt5/translations/qt_gl.qm",
+    "PyQt5/Qt5/translations/qt_he.qm",
+    "PyQt5/Qt5/translations/qt_help_ar.qm",
+    "PyQt5/Qt5/translations/qt_help_bg.qm",
+    "PyQt5/Qt5/translations/qt_help_ca.qm",
+    "PyQt5/Qt5/translations/qt_help_cs.qm",
+    "PyQt5/Qt5/translations/qt_help_da.qm",
+    "PyQt5/Qt5/translations/qt_help_de.qm",
+    "PyQt5/Qt5/translations/qt_help_en.qm",
+    "PyQt5/Qt5/translations/qt_help_es.qm",
+    "PyQt5/Qt5/translations/qt_help_fr.qm",
+    "PyQt5/Qt5/translations/qt_help_gl.qm",
+    "PyQt5/Qt5/translations/qt_help_hu.qm",
+    "PyQt5/Qt5/translations/qt_help_it.qm",
+    "PyQt5/Qt5/translations/qt_help_ja.qm",
+    "PyQt5/Qt5/translations/qt_help_ko.qm",
+    "PyQt5/Qt5/translations/qt_help_pl.qm",
+    "PyQt5/Qt5/translations/qt_help_ru.qm",
+    "PyQt5/Qt5/translations/qt_help_sk.qm",
+    "PyQt5/Qt5/translations/qt_help_sl.qm",
+    "PyQt5/Qt5/translations/qt_help_tr.qm",
+    "PyQt5/Qt5/translations/qt_help_uk.qm",
+    "PyQt5/Qt5/translations/qt_help_zh_CN.qm",
+    "PyQt5/Qt5/translations/qt_help_zh_TW.qm",
+    "PyQt5/Qt5/translations/qt_hu.qm",
+    "PyQt5/Qt5/translations/qt_it.qm",
+    "PyQt5/Qt5/translations/qt_ja.qm",
+    "PyQt5/Qt5/translations/qt_ko.qm",
+    "PyQt5/Qt5/translations/qt_lt.qm",
+    "PyQt5/Qt5/translations/qt_lv.qm",
+    "PyQt5/Qt5/translations/qt_pl.qm",
+    "PyQt5/Qt5/translations/qt_pt.qm",
+    "PyQt5/Qt5/translations/qt_ru.qm",
+    "PyQt5/Qt5/translations/qt_sk.qm",
+    "PyQt5/Qt5/translations/qt_sl.qm",
+    "PyQt5/Qt5/translations/qt_sv.qm",
+    "PyQt5/Qt5/translations/qt_tr.qm",
+    "PyQt5/Qt5/translations/qt_uk.qm",
+    "PyQt5/Qt5/translations/qt_zh_CN.qm",
+    "PyQt5/Qt5/translations/qt_zh_TW.qm",
+    "PyQt5/Qt5/translations/qtbase_ar.qm",
+    "PyQt5/Qt5/translations/qtbase_bg.qm",
+    "PyQt5/Qt5/translations/qtbase_ca.qm",
+    "PyQt5/Qt5/translations/qtbase_cs.qm",
+    "PyQt5/Qt5/translations/qtbase_da.qm",
+    "PyQt5/Qt5/translations/qtbase_de.qm",
+    "PyQt5/Qt5/translations/qtbase_en.qm",
+    "PyQt5/Qt5/translations/qtbase_es.qm",
+    "PyQt5/Qt5/translations/qtbase_fi.qm",
+    "PyQt5/Qt5/translations/qtbase_fr.qm",
+    "PyQt5/Qt5/translations/qtbase_gd.qm",
+    "PyQt5/Qt5/translations/qtbase_he.qm",
+    "PyQt5/Qt5/translations/qtbase_hu.qm",
+    "PyQt5/Qt5/translations/qtbase_it.qm",
+    "PyQt5/Qt5/translations/qtbase_ja.qm",
+    "PyQt5/Qt5/translations/qtbase_ko.qm",
+    "PyQt5/Qt5/translations/qtbase_lv.qm",
+    "PyQt5/Qt5/translations/qtbase_pl.qm",
+    "PyQt5/Qt5/translations/qtbase_ru.qm",
+    "PyQt5/Qt5/translations/qtbase_sk.qm",
+    "PyQt5/Qt5/translations/qtbase_tr.qm",
+    "PyQt5/Qt5/translations/qtbase_uk.qm",
+    "PyQt5/Qt5/translations/qtbase_zh_TW.qm",
+    "PyQt5/QtCore.pyd",
+    "PyQt5/QtGui.pyd",
+    "PyQt5/QtSvg.pyd",
+    "PyQt5/QtWidgets.pyd",
+    "PyQt5/sip.cp311-win_amd64.pyd"
+  ],
+  "groups": {
+    "webgl_qml_quick": [
+      {
+        "path": "PyQt5/Qt5/bin/Qt5Qml.dll",
+        "bytes": 3591664,
+        "sha256": "30035484c81590976627f8face9507caa8581a7dc7630cccf6a8d6de65cab707"
+      },
+      {
+        "path": "PyQt5/Qt5/bin/Qt5QmlModels.dll",
+        "bytes": 438768,
+        "sha256": "51e4e5a5e91f78774c44f69b599fae4735277ef2918f7061778615cb5c4f6e81"
+      },
+      {
+        "path": "PyQt5/Qt5/bin/Qt5Quick.dll",
+        "bytes": 4148720,
+        "sha256": "c81ad3c1111544064b1830c6f1aef3c1fd13b401546ab3b852d697c0f4d854b3"
+      },
+      {
+        "path": "PyQt5/Qt5/bin/Qt5WebSockets.dll",
+        "bytes": 149488,
+        "sha256": "6b56f77da6f17880a42d2f9d2ec8b426248f7ab2196a0f55d37ade39e3878bc6"
+      },
+      {
+        "path": "PyQt5/Qt5/plugins/platforms/qwebgl.dll",
+        "bytes": 482288,
+        "sha256": "9c3b2fa2383eeed92bb5810bdcf893ae30fa654a30b453ab2e49a95e1ccf1631"
+      }
+    ],
+    "alternate_platforms": [
+      {
+        "path": "PyQt5/Qt5/plugins/platforms/qminimal.dll",
+        "bytes": 844784,
+        "sha256": "05d1e7364dd2a672df3ca44dd6fd85bed3d3dc239dcfe29bfb464f10b4daa628"
+      },
+      {
+        "path": "PyQt5/Qt5/plugins/platforms/qoffscreen.dll",
+        "bytes": 754672,
+        "sha256": "54097626faae718a4bc8e436c85b4ded8f8fb7051b2b9563a29aee4ed5c32b7b"
+      }
+    ],
+    "portal_dbus": [
+      {
+        "path": "PyQt5/Qt5/bin/Qt5DBus.dll",
+        "bytes": 436720,
+        "sha256": "1aa70b106a10c86946e23caa9fc752dc16e29fbe803bba1f1ab30d1c63ee852a"
+      },
+      {
+        "path": "PyQt5/Qt5/plugins/platformthemes/qxdgdesktopportal.dll",
+        "bytes": 68592,
+        "sha256": "e23fbc1bec6ceedfa9fd305606a460d9cac5d43a66d19c0de36e27632fddd952"
+      }
+    ],
+    "translations_except_ru": [
+      {
+        "path": "PyQt5/Qt5/translations/qt_ar.qm",
+        "bytes": 130,
+        "sha256": "a8a1b0d6f958e7366d1c856be61000106d3e7fc993fb931675369892b9002d0b"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_bg.qm",
+        "bytes": 153,
+        "sha256": "9e1ce4d91852352043d9191f1a992838f919cba7e2f2d9bb1161e494e8bf5f5e"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_ca.qm",
+        "bytes": 153,
+        "sha256": "171c7424b24d8502ab53cb3784ff34d8fcfae26557cf8af4dfddec6485acc2fe"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_cs.qm",
+        "bytes": 157,
+        "sha256": "3c0cbfd19490d67d1b3b9e944c3a4d9a9e7f87d7ae35e88d5d5a0077349b5b21"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_da.qm",
+        "bytes": 153,
+        "sha256": "b5036161ce808c728e5fda985f792db565831fd01cf00b282547790c037353a2"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_de.qm",
+        "bytes": 153,
+        "sha256": "5805b8ff3747849794e2d70661d737c69c15f1ae763c38e17084b1e5a81e9153"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_en.qm",
+        "bytes": 16,
+        "sha256": "9959b510b15d18937848ad13007e30459d2e993c67e564badbfc18f935695c85"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_es.qm",
+        "bytes": 153,
+        "sha256": "e25e43f046f61022ffe871a2f73c6a12edfc5c3efd958c0e019a721860a053b0"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_fa.qm",
+        "bytes": 293121,
+        "sha256": "b292afb0763b8c7c30a5af7372bfc12d8a0d00bf3dd4a000715d9f576d9c1a39"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_fi.qm",
+        "bytes": 117,
+        "sha256": "048ca42dce4faf5fc21d843576e3c6fd963146ecc78554e7e5f34d07f64fb213"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_fr.qm",
+        "bytes": 153,
+        "sha256": "8624033d849e670b12c9532337fcbf260f20848e044fee7787cfe2ac92be28db"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_gd.qm",
+        "bytes": 70,
+        "sha256": "49df855a004a17950338af3146466f6df4d5852410bd0b58ea80e0d0203a9d24"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_gl.qm",
+        "bytes": 323590,
+        "sha256": "204a01ac7deb6b5bae193afecbd1e50d18c73bf7d94badeb2bbfdf6123c4ed93"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_he.qm",
+        "bytes": 83,
+        "sha256": "c113d14e218d5402b616dabea27969c6f83852676468c5ef051dddefb3ee0235"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_help_ar.qm",
+        "bytes": 8743,
+        "sha256": "222088c9752d1cc3bab985ef2dc77e5ae78578dce18a61ec15b39f02e588163d"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_help_bg.qm",
+        "bytes": 10599,
+        "sha256": "cbcdd1e0bbae332d80ddb0a286056f17c824fa28d353d7fdf12fc97d9f6fe054"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_help_ca.qm",
+        "bytes": 7444,
+        "sha256": "ecd4283a660f2cf72849b323810d7eadd063120b6f561e05aa1243a5b280946a"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_help_cs.qm",
+        "bytes": 15297,
+        "sha256": "4ac56fc63e400943bab13f1d4c418502138908e1d488c24aee6131d3d17552aa"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_help_da.qm",
+        "bytes": 4795,
+        "sha256": "6bb092552a398687119f6d52145f04bf8373977446d8f00c0dcbd56b96829f0f"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_help_de.qm",
+        "bytes": 7570,
+        "sha256": "9962523fbae9f1e4c3b5c3c16860d059291cb30dc5ebe5a5eda4c836a03fed1e"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_help_en.qm",
+        "bytes": 16,
+        "sha256": "9959b510b15d18937848ad13007e30459d2e993c67e564badbfc18f935695c85"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_help_es.qm",
+        "bytes": 10704,
+        "sha256": "fd16b279f8cf69077f75e94d90c9c07a2afff3948a579e3789f5ffb5e5f4202d"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_help_fr.qm",
+        "bytes": 10922,
+        "sha256": "687e351c062f688aaff6cf05218d6017b80b1a1b4238d1d30250a55ee41c5fed"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_help_gl.qm",
+        "bytes": 10891,
+        "sha256": "7399a248609974773f60866c87b78ea7dfbc4f750313d692f7886cd763883c9f"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_help_hu.qm",
+        "bytes": 10284,
+        "sha256": "70f33b569c2942f41c6d634ea6a61cb8d80eb2c7011bad48ef6dbae9677960d5"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_help_it.qm",
+        "bytes": 10612,
+        "sha256": "316fe8d0815e2b4b396895beb38ef1a40431915b5e054df80f4c0cd556f26e4b"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_help_ja.qm",
+        "bytes": 7917,
+        "sha256": "ae603b2c0d434d40cde433ffcba65f9ee27978a9e19316007be7fe782a5b8b47"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_help_ko.qm",
+        "bytes": 5708,
+        "sha256": "f11c64694e8e34e1d2c46c1a1d15d6ba9f2db7b61de4fdf54eca5ab977c3e052"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_help_pl.qm",
+        "bytes": 9673,
+        "sha256": "cc6cb4d8c54086224672f2e49e623c8cb7c0c1cd65b8d5ecd42fc9ba3a6065bd"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_help_sk.qm",
+        "bytes": 10388,
+        "sha256": "f41e33e1d790bd0d3eb180f1f875bc191fe74773628f25c2cad95e1402e66867"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_help_sl.qm",
+        "bytes": 10363,
+        "sha256": "2ec955e662407ebcd8dcdae5aaa21e4108e0b5b0aee0e9db712c27072943535f"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_help_tr.qm",
+        "bytes": 4629,
+        "sha256": "ebdeca0cfee7a9441deb800babfd97c63bc4e421da885c55b3bd49725ebacd25"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_help_uk.qm",
+        "bytes": 9750,
+        "sha256": "497cfc473684692ee44d7a3795e8fb2270c57069fd9eb98a615dd29ab9be8a7c"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_help_zh_CN.qm",
+        "bytes": 6441,
+        "sha256": "c02aaa20923f18addab520be5cb84efd4c723396bdc24b4c9a72d406f101c7b4"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_help_zh_TW.qm",
+        "bytes": 9301,
+        "sha256": "3697f1660d7f2ac9b37ac33cd1c7ecae08adbd26710e7e0076497ccddc8bc830"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_hu.qm",
+        "bytes": 146,
+        "sha256": "bb246aabd501e14ced8b1ffc1369e3d5d26567aae62b3ead4d94c22fb77c3471"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_it.qm",
+        "bytes": 153,
+        "sha256": "9117aac2d07bc86dfa55a29b8825ed27c7093300fcc90e143e135e00e85f09d7"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_ja.qm",
+        "bytes": 146,
+        "sha256": "23457ce8e44e233c6f85d56a4ee6a2cecd87c9c7bdde6d8b8a925902eed1cd9c"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_ko.qm",
+        "bytes": 146,
+        "sha256": "4cc1af37e771f0a43898849cff2cd42a820451b8d2b2e88931031629d781db05"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_lt.qm",
+        "bytes": 165383,
+        "sha256": "47eb5f97467df769261421d54a5bea1131c9fb9b6388791d38bb6574335b64bf"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_lv.qm",
+        "bytes": 89,
+        "sha256": "03467738042a15676e504ba02cb326dcdb773b171fada3cd62b7a0e0564314a0"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_pl.qm",
+        "bytes": 161,
+        "sha256": "bd7dd0c2cab119a973dc10c3bff7499d9728b928b541f86056921b30c8db78e6"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_pt.qm",
+        "bytes": 70334,
+        "sha256": "2c1e7bbf5168a64b43752dd4c547601c0bde6d610f8671fa3e3af38597e84783"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_sk.qm",
+        "bytes": 157,
+        "sha256": "b6adffd889ff96bf195cb997327e7d7005a815cad67823fa6915a19c2d9bb668"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_sl.qm",
+        "bytes": 228428,
+        "sha256": "c44e0313a9414cc0e490b65b0c036fa11bca959353b228886547bc2c8492034f"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_sv.qm",
+        "bytes": 65851,
+        "sha256": "4b4b6ff7fd237c9da0301b4946132e68653d15eb5faf38e4c5fbfebb12dd97f7"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_tr.qm",
+        "bytes": 110,
+        "sha256": "f574a2cfd4715885c3dbdf5ae60995252673bd94fdaa9586f7e0586f6c1ac0ee"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_uk.qm",
+        "bytes": 164,
+        "sha256": "f1621e680e1642f9463e4b07e7e78b50f9a7bdb7c321d7302039cb3405cbdea4"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_zh_CN.qm",
+        "bytes": 117347,
+        "sha256": "28cde75d7b32c81fef1d4630c37b79a61dec24b357632ff00d6365a57d8be43b"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qt_zh_TW.qm",
+        "bytes": 141,
+        "sha256": "751ecda0c33e061d91241268357fbd2f6b7f70a1116e714f28d22efd61ec7a1a"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qtbase_ar.qm",
+        "bytes": 160017,
+        "sha256": "e03fe68d83201543698fd7fe267dd5dfc5bfd195147e74ff2f19ac3491401263"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qtbase_bg.qm",
+        "bytes": 165337,
+        "sha256": "e448ac9e3f16c29eb27af3012efe21052daa78fabfb34cd6dff2f69ee3bd3cdb"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qtbase_ca.qm",
+        "bytes": 210159,
+        "sha256": "52e94fcc9490889b55812c5433d009b44bdc2dc3170eb55b1af444ef4aae1d7f"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qtbase_cs.qm",
+        "bytes": 174701,
+        "sha256": "03028b42df5479270371e4c3bdc7df2f56cbbe6dda956a2864ac6f6415861fe8"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qtbase_da.qm",
+        "bytes": 181387,
+        "sha256": "7d1e5ca3310b54d104c19bf2abd402b38e584e87039a70e153c4a9af74b25c22"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qtbase_de.qm",
+        "bytes": 220467,
+        "sha256": "553c046835db9adef15954fa9a576625366ba8bfd16637038c4bcd28e5ebace1"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qtbase_en.qm",
+        "bytes": 16,
+        "sha256": "9959b510b15d18937848ad13007e30459d2e993c67e564badbfc18f935695c85"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qtbase_es.qm",
+        "bytes": 165170,
+        "sha256": "4ffda56ba3bb5414ab0482d1dde64a6f226e3488f6b7f3f11a150e01f53fa4c8"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qtbase_fi.qm",
+        "bytes": 179941,
+        "sha256": "e47fe13713e184d07fa4495dde0c589b0e8f562e91574a3558a9363443a4fa72"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qtbase_fr.qm",
+        "bytes": 166167,
+        "sha256": "edb32a933cef376a2636634e14e2977ced6284e4aa9a4ac7e2292f9ca54c384a"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qtbase_gd.qm",
+        "bytes": 189580,
+        "sha256": "63b439dd44139aa3aed54c2ebe03fa9bc77f22c14ed8fba8eff2608445bb233d"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qtbase_he.qm",
+        "bytes": 138690,
+        "sha256": "e1ebca16afe8994356f81ca007fbdb9ddf865842010fe908923d873b687cad3f"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qtbase_hu.qm",
+        "bytes": 160494,
+        "sha256": "c61b67bb9d1e84f0ab0792b6518fe055414a68e44d0c7bc7c862773800fa8299"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qtbase_it.qm",
+        "bytes": 161172,
+        "sha256": "7c7dc8b45bf4e41fec60021ab13d9c7655be007b8123db8d7537a119eb64a366"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qtbase_ja.qm",
+        "bytes": 129911,
+        "sha256": "cba382acc44d3680d400f2c625de93d0c4bd72a90102769edfd1fe91cb9b617b"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qtbase_ko.qm",
+        "bytes": 156799,
+        "sha256": "0179ed1b136e1cb3f583351eaa2c545ba3d83a6ee3f82c32505926a1a5f5f183"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qtbase_lv.qm",
+        "bytes": 153608,
+        "sha256": "846e047573ae40c83671c3ba7f73e27efc24b98c82701da0df9973e574178bb2"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qtbase_pl.qm",
+        "bytes": 162982,
+        "sha256": "ce99032a3b0bf8abad758895cc22837088ead99fd2d2514e2d180693081cfe57"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qtbase_sk.qm",
+        "bytes": 125763,
+        "sha256": "d586ae2c314074cf398417fdecb40709d5478dfeb0a67c2fe60d509ee9b59ed7"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qtbase_tr.qm",
+        "bytes": 194487,
+        "sha256": "6a0bf6e70e7920c2b193e76e92f78f315936955d3b06ac039d917f2e06c43281"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qtbase_uk.qm",
+        "bytes": 158274,
+        "sha256": "51b8ff55b37dc5907d637a8ddda12fbe816852b0244c74eb4f0fb84867a786e0"
+      },
+      {
+        "path": "PyQt5/Qt5/translations/qtbase_zh_TW.qm",
+        "bytes": 127849,
+        "sha256": "085d29eaf9bbb788b2f2503d74a1ef963a9411ceb600441254ce49a120e1ab63"
+      }
+    ]
+  }
+}

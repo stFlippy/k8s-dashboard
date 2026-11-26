@@ -2121,6 +2121,7 @@ class MainWindow(QMainWindow):
         self._auth_busy = False
         self.preferences = store.preferences()
         configure_cluster_threads(self.api, self.preferences.get('cluster_io_threads', 1))
+        self.api.request_policy.set_cluster_rate(self.preferences.get('cluster_request_rate', 2))
         self.api.set_transport_mode(self.preferences.get('api_transport', 'proxy'))
         self.preferences["read_only"] = True
         self.write_guard = WriteGuard(

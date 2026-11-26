@@ -59,6 +59,8 @@ def validate_preferences(value):
     result['monitoring_idle_minutes'] = idle_minutes(result.get('monitoring_idle_minutes'))
     threads = result.get('cluster_io_threads', 1)
     result['cluster_io_threads'] = threads if type(threads) is int and 0 <= threads <= 50 else 1
+    rate = result.get('cluster_request_rate', 2)
+    result['cluster_request_rate'] = rate if type(rate) is int and 1 <= rate <= 100 else 2
     if result.get('api_transport') not in ('proxy', 'https'): result['api_transport'] = 'proxy'
     zones = result.get('controller_timezones',{})
     if not isinstance(zones,dict): zones = {}
