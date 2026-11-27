@@ -110,7 +110,7 @@ class ClusterDialog(SecretDialog):
         self.buttons.setEnabled(False)
         self.form_widget.setEnabled(False)
         self.status.setText('Проверка подключения…')
-        def work():
+        def perform_work():
             config = None
             try:
                 if not reusable:
@@ -129,6 +129,10 @@ class ClusterDialog(SecretDialog):
                     expected=existing, controller_timezone=zone, account_id=aid)
             options = {'transport_mode': 'https'} if self.store.preferences().get('api_transport') == 'https' else {}
             return f"Подключение установлено, namespaces: {test_connection(executable, self.store, server, config or self.store.decrypt(existing['encryptedKubeconfig']), **options)}."
+        def work():
+            from .auth_queue import connection_lock
+            with connection_lock(self.store, (existing or {}).get("id", server)):
+                return perform_work()
         def finish():
             self.busy = False
             self.buttons.setEnabled(True)

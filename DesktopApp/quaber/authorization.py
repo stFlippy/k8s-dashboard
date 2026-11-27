@@ -37,7 +37,8 @@ class ClusterAuthorization:
         lock_key = initial.get('accountId') or identifier
         with self._guard:
             lock = self._locks.setdefault(lock_key, threading.Lock())
-        with lock:
+        from .auth_queue import connection_lock
+        with connection_lock(self.store, identifier), lock:
             cluster = self.cluster(identifier)
             if not cluster.get("enabled"):
                 raise AuthorizationRequired("Кластер отключён.")
@@ -83,6 +84,8 @@ class ClusterAuthorization:
                     raise AuthorizationRequired("Запись кластера изменилась во время входа; старый результат отклонён.") from None
                 safe = _login_message(str(exc), password)
                 rejected = any(word in safe.lower() for word in ("unauthorized", "invalid credentials", "invalid password", "incorrect", "rejected", "неверн", "отклонён"))
+                if not rejected and any(word in safe.lower() for word in ('connect','network','timeout','timed out','refused','сеть','подключиться','таймаут')):
+                    raise ConnectionError(safe) from None
                 self.block(identifier, shared=rejected)
                 raise AuthorizationRequired(safe) from None
             return self.cluster(identifier)

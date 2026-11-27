@@ -166,7 +166,8 @@ class RequestPolicy:
         if self.limits.global_rate is not None:
             self.global_tokens = min(self.global_capacity, self.global_tokens+self.limits.global_rate*(now-self.global_at))
         self.global_at = now
-        cluster['tokens'] = min(self.limits.cluster_burst, cluster['tokens']+self.limits.cluster_rate*(now-cluster['at']))
+        rate=min(2.,self.limits.cluster_rate) if cluster.get('degraded') else self.limits.cluster_rate
+        cluster['tokens'] = min(self.limits.cluster_burst, cluster['tokens']+rate*(now-cluster['at']))
         cluster['at'] = now
 
     def _next_ticket(self, candidates):
@@ -206,6 +207,7 @@ class RequestPolicy:
                         raise RequestDeferred('Cluster cooldown is active; skip/coalesce this monitor tick.')
                     candidates = [(t, c, m, d, p) for t, c, m, d, p in self.queue
                                   if self._cluster(c)['active'] < self.cluster_concurrency
+                                  and not (self._cluster(c).get('draining') and self._cluster(c)['active'])
                                   and self._cluster(c)['until'] <= self.clock()
                                   and not self._cluster(c)['probe']
                                   and self._cluster(c)['tokens'] >= 1
@@ -224,7 +226,7 @@ class RequestPolicy:
                         check()
                         if self.endpoint_budget is not None and endpoint:
                             try:
-                                lease = self.endpoint_budget.acquire(endpoint, monitor=monitor, heavy=heavy)
+                                lease = self.endpoint_budget.acquire(endpoint, monitor=monitor, heavy=heavy, **({'rate':2.} if cluster.get('degraded') else {}))
                             except (OSError, sqlite3.Error) as exc:
                                 raise RequestDeferred('Shared endpoint budget is temporarily unavailable.') from exc
                             if lease is None:
@@ -252,6 +254,7 @@ class RequestPolicy:
                         self.last_cluster = cid
                         self.stats['peak'] = max(self.stats['peak'], self.inflight)
                         acquired = True
+                        generation=cluster.get('generation',0)
                         break
                     if self.clock() >= deadline:
                         raise RequestDeferred('Request budget/cooldown deadline reached.')
@@ -271,12 +274,12 @@ class RequestPolicy:
         reset = _response_account.set(account)
         try:
             check()
-            yield
+            yield generation
         except urllib.error.HTTPError as exc:
-            self.failed(cid, exc.code, exc.headers.get('Retry-After') if exc.headers else None)
+            self.failed(cid, exc.code, exc.headers.get('Retry-After') if exc.headers else None, generation=generation)
             raise
         except (urllib.error.URLError, TimeoutError):
-            self.failed(cid)
+            self.failed(cid,generation=generation)
             raise
         finally:
             _response_account.reset(reset)
@@ -294,21 +297,34 @@ class RequestPolicy:
                     cluster['downloads'] -= int(long_download)
                     if cluster['active'] == 0:
                         cluster['probe'] = False
+                        cluster['draining'] = False
                     self.inflight -= 1
                     self.monitoring -= int(monitor)
                     self.downloads -= int(long_download)
                     self.heavy -= int(heavy)
                     self.condition.notify_all()
 
-    def failed(self, cid, status=None, retry_after=None):
+    def failed(self, cid, status=None, retry_after=None, *, generation=None):
         with self.condition:
             self.stats['errors'] += 1
         if status is not None and status != 429 and status < 500:
             return
         with self.condition:
             cluster = self._cluster(cid)
+            if generation is not None and generation!=cluster.get('generation',0):return
             cluster['failures'] += 1
+            cluster['healthy_reads']=0
+            if not cluster.get('degraded'):
+                cluster['degraded']=True
+                cluster['generation']=cluster.get('generation',0)+1
+                cluster['draining']=bool(cluster['active'])
+                cluster['tokens']=min(cluster['tokens'],1.)
+                self.condition.notify_all()
+                if not (status == 429 and retry_after):
+                    return
             cluster['probe'] = False
+            cluster['generation']=cluster.get('generation',0)+1
+            cluster['draining']=bool(cluster['active'])
             delay = min(120., min(60., 5.*2**min(4, cluster['failures']-1))*self.jitter(.8, 1.2))
             if status == 429 and retry_after:
                 try:
@@ -322,9 +338,19 @@ class RequestPolicy:
                         pass
             cluster['until'] = max(cluster['until'], self.clock()+delay)
 
-    def succeeded(self, cid, size=0):
+    def succeeded(self, cid, size=0, *, generation=None):
         with self.condition:
-            self._cluster(cid)['failures'] = 0
-            self._cluster(cid)['probe'] = False
+            cluster=self._cluster(cid)
             self.stats['success'] += 1
             self.stats['bytes'] += size
+            if generation is not None and generation!=cluster.get('generation',0):return
+            cluster['healthy_reads']=cluster.get('healthy_reads',0)+1
+            if cluster.get('degraded') and cluster['healthy_reads']>=3:
+                cluster['degraded']=False
+                cluster['failures']=0
+                cluster['generation']=cluster.get('generation',0)+1
+                cluster['draining']=bool(cluster['active'])
+            self._cluster(cid)['probe'] = False
+
+    def is_degraded(self,cid):
+        with self.condition:return bool(self._cluster(cid).get('degraded'))

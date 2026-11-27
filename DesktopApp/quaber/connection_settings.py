@@ -45,6 +45,21 @@ class ConnectionSettings:
         if idle.currentData() != value:
             set_idle(idle.currentData())
         general_form.addRow('Автопауза при бездействии', idle)
+        from PyQt5.QtWidgets import QSpinBox
+        from .cluster_workers import configure_cluster_threads
+        parallel = QSpinBox()
+        parallel.setObjectName('clusterParallelism')
+        parallel.setRange(1,50)
+        parallel.setValue(_ui_view.preferences.get('cluster_parallelism',2))
+        parallel.setFixedWidth(90)
+        parallel.setToolTip('На каждый кластер: столько же сетевых исполнителей и запросов в секунду. Стартовый запас — 2 запроса.')
+        def set_parallel(value):
+            configure_cluster_threads(_ui_view.api,value)
+            _ui_view.api.request_policy.set_cluster_rate(value)
+            _ui_view.preferences.update(cluster_parallelism=value,cluster_io_threads=value,cluster_request_rate=value)
+            _ui_view._save_preferences()
+        parallel.valueChanged.connect(set_parallel)
+        general_form.addRow('Потоков и запросов/с на кластер',parallel)
         client_row = QHBoxLayout()
         client = QLineEdit(_ui_view.store.preferences().get('kubectl_path', ''))
         client.setPlaceholderText('Автоматически из PATH')
@@ -292,44 +307,10 @@ class ConnectionSettings:
         dialog.sections.currentRowChanged.connect(section_changed)
         def reveal_debug():
             if dialog.sections.count() == 4: return
-            from PyQt5.QtWidgets import QLabel, QSpinBox
-            from .cluster_workers import configured_threads, configure_cluster_threads
             debug = QWidget()
             form = QFormLayout(debug)
             form.setContentsMargins(0, 0, 0, 0)
             form.setFormAlignment(Qt.AlignTop)
-            threads = QSpinBox()
-            threads.setObjectName('clusterIoThreads')
-            threads.setRange(0, 50)
-            threads.setValue(configured_threads(_ui_view.api))
-            threads.setFixedWidth(90)
-            concurrency = QLabel()
-            concurrency.setWordWrap(True)
-            rate = QSpinBox()
-            rate.setObjectName('clusterRequestRate')
-            rate.setRange(1, 100)
-            rate.setValue(int(_ui_view.api.request_policy.limits.cluster_rate))
-            rate.setFixedWidth(90)
-            def update_description():
-                value = threads.value()
-                concurrency.setText(('0 — последовательно в фоновом сборщике, без отдельного сетевого пула. ' if value == 0 else f'Максимум одновременных запросов на кластер: {value}. ') + f'На один поток приходится один запрос. Лимит скорости: {rate.value()} запросов/с на кластер; стартовый запас — 2 запроса. Значения сохраняются между запусками.')
-            def apply(value):
-                configure_cluster_threads(_ui_view.api, value)
-                if _ui_view.preferences.get('cluster_io_threads', 1) != value:
-                    _ui_view.preferences['cluster_io_threads'] = value
-                    _ui_view._save_preferences()
-                update_description()
-            threads.valueChanged.connect(apply)
-            form.addRow('Количество потоков на кластер', threads)
-            form.addRow(concurrency)
-            apply(threads.value())
-            def set_rate(value):
-                _ui_view.api.request_policy.set_cluster_rate(value)
-                _ui_view.preferences['cluster_request_rate'] = value
-                _ui_view._save_preferences()
-                update_description()
-            rate.valueChanged.connect(set_rate)
-            form.insertRow(1, 'Запросов в секунду на кластер', rate)
             transport = QComboBox()
             transport.setObjectName('apiTransport')
             transport.addItem('kubectl proxy', 'proxy')

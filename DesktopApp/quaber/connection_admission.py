@@ -21,3 +21,6 @@ class ConnectionAdmission:
                 raise AuthorizationRequired('Sign-in required. Update the connection credentials to resume monitoring.')
             if blocked is not None:
                 self._blocked.pop(cluster_id, None)
+
+    def is_blocked(self, cluster_id, revision):
+        with self._lock:return self._blocked.get(cluster_id)==revision

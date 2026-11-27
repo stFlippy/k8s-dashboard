@@ -86,7 +86,7 @@ class EndpointBudget:
         db.execute('PRAGMA synchronous=NORMAL')
         return db
 
-    def acquire(self, endpoint, *, monitor=True, heavy=False):
+    def acquire(self, endpoint, *, monitor=True, heavy=False, rate=None):
         now = self.clock()
         with closing(self._connect()) as db:
             db.execute('BEGIN IMMEDIATE')
@@ -98,7 +98,7 @@ class EndpointBudget:
             tokens, at, byte_tokens = row if row is not None else (self.burst, now, self.byte_burst)
             if at > now:  # OS reboot resets the monotonic epoch.
                 tokens, at, byte_tokens = self.burst, now, self.byte_burst
-            tokens = min(self.burst, tokens + self.rate * (now - at))
+            tokens = min(self.burst, tokens + (self.rate if rate is None else min(self.rate,rate)) * (now - at))
             byte_tokens = min(self.byte_burst, byte_tokens + self.byte_rate * (now - at))
             active, heavies = db.execute('SELECT count(*),coalesce(sum(heavy),0) FROM leases WHERE endpoint=?', (endpoint,)).fetchone()
             allowed = tokens >= 1 and active < self.max_inflight and (not heavy or not heavies) and (not monitor or byte_tokens >= 0)

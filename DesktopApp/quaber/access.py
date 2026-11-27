@@ -3,7 +3,8 @@ import re
 
 
 def is_resource_write(method, path):
-    return method.upper() in ("POST", "PUT", "PATCH", "DELETE") and not path.startswith("/apis/authorization.k8s.io/")
+    identity_review=(method.upper()=='POST' and path.split('?',1)[0]=='/apis/authentication.k8s.io/v1/selfsubjectreviews')
+    return method.upper() in ("POST", "PUT", "PATCH", "DELETE") and not path.startswith("/apis/authorization.k8s.io/") and not identity_review
 
 
 def server_forbidden(message):

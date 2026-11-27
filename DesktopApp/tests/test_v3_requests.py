@@ -122,6 +122,7 @@ class RequestTests(unittest.TestCase):
         from quaber.request_policy import RequestDeferred
         api, clock, clusters = fake_api()
         api.request_policy.failed('c0', 429, '600')
+        api.request_policy.failed('c0', 429, '600')
         before = clock()
         with ThreadPoolExecutor(max_workers=1) as pool:
             with self.assertRaises(RequestDeferred): pool.submit(api.request, 'c0', '/api/v1/pods').result()
@@ -289,6 +290,7 @@ class RequestTests(unittest.TestCase):
         for a in range(len(stamps)):
             for b in range(a, len(stamps)):
                 self.assertLessEqual(b-a+1, 2+2*(stamps[b]-stamps[a])+1e-8)
+        api.request_policy.failed('c0', 429, '600')
         api.request_policy.failed('c0', 429, '600')
         self.assertGreaterEqual(api.request_policy.clusters['c0']['until'], clock()+600)
         self.assertEqual(api.request_policy.inflight, 0)

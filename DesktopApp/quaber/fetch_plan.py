@@ -106,6 +106,9 @@ def _merge_collections(api, plan, cluster, reader, selection, names, old, scopes
                 detached['_ownership_pending'] = True
                 progress(ScopeProgress(plan, cluster, namespace, _read_token.get(), detached))
     for scope in scopes.values():
+        policy=getattr(api,'request_policy',None)
+        if policy is not None and policy.is_degraded(cluster.identifier) is True:
+            scope['_type_errors']['connection']='Соединение нестабильно: не более 2 запросов/с.'
         dates = scope['_type_success']
         if not scope['_type_errors'] and len(dates) == len(COLLECTIONS):
             scope['_last_success'] = min(dates.values())

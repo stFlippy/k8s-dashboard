@@ -54,6 +54,8 @@ def validate_view(value):
 
 def validate_preferences(value):
     result = copy.deepcopy(value)
+    parallel=result.get('cluster_parallelism',result.get('cluster_io_threads',2))
+    result['cluster_parallelism']=parallel if type(parallel) is int and 1<=parallel<=50 else 2
     result.pop('recent', None)
     from .monitoring import idle_minutes
     result['monitoring_idle_minutes'] = idle_minutes(result.get('monitoring_idle_minutes'))

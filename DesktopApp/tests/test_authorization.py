@@ -14,6 +14,11 @@ from test_storage import CONFIG
 
 
 class AuthorizationTests(unittest.TestCase):
+    def test_network_login_failure_does_not_block_account_as_bad_password(self):
+        with patch('quaber.authorization.locate_kubectl',return_value=Path('kubectl.exe')), patch('quaber.authorization.login',side_effect=RuntimeError('connect refused')):
+            with self.assertRaises(ConnectionError):
+                self.auth.renew(self.cluster['id'],self.cluster['encryptedKubeconfig'])
+        self.assertEqual(self.auth._blocked,{})
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)

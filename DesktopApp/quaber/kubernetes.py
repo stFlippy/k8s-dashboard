@@ -84,7 +84,7 @@ _transport_binding = contextvars.ContextVar('transport_binding', default=None)
 
 
 class Kubernetes:
-    def __init__(self, store: UserStore, proxy: ProxyManager, *, opener=None, cache=None, policy=None, authorization=None):
+    def __init__(self, store: UserStore, proxy: ProxyManager, *, opener=None, cache=None, policy=None, authorization=None, preflight=False):
         self.store, self.proxy = store, proxy
         self.opener = opener if opener is not None else urllib.request.build_opener(urllib.request.ProxyHandler({}))
         self.throttle_samples = ThrottleSamples()
@@ -99,6 +99,8 @@ class Kubernetes:
         self._connection_admission = ConnectionAdmission()
         self.stopped = False
         self.transport_mode = 'proxy'
+        from .identity_gate import IdentityGate
+        self.identity_gate = IdentityGate() if preflight else None
 
     def set_transport_mode(self, mode):
         if mode not in ('proxy', 'https'):
@@ -147,6 +149,10 @@ class Kubernetes:
                         '/apis/authorization.k8s.io/v1/selfsubjectrulesreviews': 'SelfSubjectRulesReview'}
         review = (method == 'POST' and path in review_kinds and isinstance(payload, dict)
                   and payload.get('kind') == review_kinds[path] and payload.get('apiVersion') == 'authorization.k8s.io/v1')
+        from .identity_gate import WHOAMI
+        identity_review = (method=='POST' and path==WHOAMI and isinstance(payload,dict)
+                           and payload.get('kind')=='SelfSubjectReview' and payload.get('apiVersion')=='authentication.k8s.io/v1')
+        review = review or identity_review
         if method in ('POST', 'PUT', 'PATCH', 'DELETE') and not review:
             from .write_guard import require_permit
             require_permit(permit)
@@ -175,6 +181,17 @@ class Kubernetes:
         if max_bytes is None and sink is None:
             raise ValueError("Неограниченный ответ разрешён только для потоковой записи в файл.")
         from .cluster_workers import cluster_io
+        gate=getattr(self,'identity_gate',None)
+        if gate is not None and not identity_review:
+            from .auth_queue import connection_lock
+            while True:
+                gate.ensure(self,cluster_id)
+                with connection_lock(self.store,cluster_id).read():
+                    if not gate.matches(self,cluster_id):continue
+                    reset=_transport_binding.set(getattr(self,'transport_mode','proxy'))
+                    try:
+                        return cluster_io(self,cluster_id,lambda:self._request(cluster_id,path,method,payload,text,max_bytes,_retried,content_type,sink,budget,permit),permit=permit)
+                    finally:_transport_binding.reset(reset)
         reset = _transport_binding.set(getattr(self, 'transport_mode', 'proxy'))
         try:
             return cluster_io(self, cluster_id, lambda: self._request(
@@ -215,7 +232,7 @@ class Kubernetes:
             full_log = urllib.parse.urlsplit(req.full_url).path.endswith('/log') and 'tailLines' not in query
             heavy = full_log or any(part in req.full_url for part in ('/proxy/stats/summary', '/proxy/metrics/cadvisor', '/api/v1/query_range'))
             with policy.slot(cluster_id, check, monitor=not is_resource_write(req.get_method(), req.selector),
-                             long_download=full_log, heavy=heavy):
+                             long_download=full_log, heavy=heavy) as generation:
                 check()
                 try:
                     check()
@@ -235,7 +252,7 @@ class Kubernetes:
                     yield response
                     if permit is None:
                         check()
-            policy.succeeded(cluster_id)
+            policy.succeeded(cluster_id,generation=generation)
         except urllib.error.HTTPError as exc:
             policy.status(exc.code)
             # A gateway/server failure after real dispatch does not prove the
@@ -333,6 +350,10 @@ class Kubernetes:
                 log_problem(f"{cluster.get('name', cluster_id)} · {method} {urllib.parse.urlsplit(path).path}",
                             f'HTTP {exc.code}: {detail[:4000]}')
             if exc.code == 401:
+                if getattr(self,'identity_gate',None) is not None:
+                    if _retried:self.authorization.block(cluster_id)
+                    self._block_reads(cluster_id,cluster)
+                    raise AuthorizationRequired('Вход требуется заново: проверка авторизации отклонена.') from None
                 if permit is not None:
                     raise PermissionError('Operation rejected by authorization; renew access and confirm a new intent.') from None
                 if not _retried:
@@ -706,7 +727,7 @@ class Kubernetes:
                 self._check_credentials(cluster_id)
                 if self.stopped: raise RuntimeError('Application is closing.')
             with self.store.operation('exec', cluster_id, namespace, name, uid=uid, container=container):
-                with self.request_policy.slot(cluster_id, check, monitor=False):
+                with self.request_policy.slot(cluster_id, check, monitor=False) as generation:
                     check()
                     cluster = self.cluster(cluster_id)
                     if not cluster.get('enabled'): raise PermissionError('Cluster is disabled.')
@@ -715,7 +736,7 @@ class Kubernetes:
                     self.request_policy.dispatched(cluster_id)
                     result = self.proxy.execute(cluster, namespace, name, container, command)
                     permit.state = 'accepted'
-                    self.request_policy.succeeded(cluster_id)
+                    self.request_policy.succeeded(cluster_id,generation=generation)
                     return result
 
     def delete_pod(self, cluster_id: str, namespace: str, name: str, uid: str, mode: str, *, expected_version=None, permit=None) -> None:

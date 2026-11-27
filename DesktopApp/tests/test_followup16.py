@@ -50,7 +50,7 @@ class CredentialsTests(unittest.TestCase):
         auth = ClusterAuthorization(self.store, Mock())
         with patch('quaber.authorization.locate_kubectl', return_value=Path('kubectl')), patch('quaber.authorization.login', side_effect=RuntimeError('connection refused')) as login:
             for cluster in (a, b):
-                with self.assertRaises(AuthorizationRequired):
+                with self.assertRaises(ConnectionError):
                     auth.renew(cluster['id'], cluster['encryptedKubeconfig'])
             self.assertEqual(login.call_count, 2)
 

@@ -23,6 +23,7 @@ from PyQt5.QtWidgets import QAbstractItemView, QApplication, QCheckBox, QDialog,
 
 from .kubectl import ProxyManager, locate_kubectl, login, test_connection
 from .kubernetes import Kubernetes, ResourceNotFoundError
+from .authorization import AuthorizationRequired
 from .storage import UserStore, validate_server
 from .views import MatrixViews
 from .widgets import FullCheckBox, AppComboBox as QComboBox, CodeEditor, NamespaceHeader, PodDelegate, PodMatrix, stylesheet, pod_status, pod_at, resource_age, resource_percent, StatusDelegate, DisabledHintButton, PodDonut
@@ -128,7 +129,7 @@ class LoginGroupsDialog(SecretDialog):
         self.setWindowTitle("Требуется вход в кластеры")
         self.resize(440, min(560, 115+76*len(groups)))
         layout = QVBoxLayout(self)
-        hint = QLabel('Пароль учётной записи применяется к связанным подключениям. Вход выполняется последовательно.')
+        hint = QLabel('Введите пароль')
         hint.setWordWrap(True)
         layout.addWidget(hint)
         self.passwords = []
@@ -255,9 +256,11 @@ class LoginGroupsDialog(SecretDialog):
                         if c['id'] in self.succeeded_cluster_ids:
                             continue
                         try:
-                            config = serialized_login(store, c, password,
-                                lambda c=c: login(executable, c['server'], username, password))
-                            store.update_logins({c['id']:config}, expected={c['id']:c})
+                            from .auth_queue import connection_lock
+                            with connection_lock(store,c['id']):
+                                config = serialized_login(store, c, password,
+                                    lambda c=c: login(executable, c['server'], username, password))
+                                store.update_logins({c['id']:config}, expected={c['id']:c})
                             succeeded.append(c['id'])
                         except Exception as exc:
                             problems.append(c['name']+': '+_login_message(str(exc),password))
@@ -2110,7 +2113,7 @@ class MainWindow(QMainWindow):
         # executable above controls only the missing-client hint. The manager
         # resolves the current global setting when starting each client.
         self.proxy = ProxyManager(None, store)
-        self.api = Kubernetes(store, self.proxy)
+        self.api = Kubernetes(store, self.proxy, preflight=True)
         from .cluster_workers import configure_cluster_threads
         self.api.authorization_required = self.authorization_needed.emit
         self.api.access_denied = self.access_denied.emit
@@ -2120,8 +2123,9 @@ class MainWindow(QMainWindow):
         self._auth_dismissed = {}
         self._auth_busy = False
         self.preferences = store.preferences()
-        configure_cluster_threads(self.api, self.preferences.get('cluster_io_threads', 1))
-        self.api.request_policy.set_cluster_rate(self.preferences.get('cluster_request_rate', 2))
+        parallel=self.preferences.get('cluster_parallelism',2)
+        configure_cluster_threads(self.api, parallel)
+        self.api.request_policy.set_cluster_rate(parallel)
         self.api.set_transport_mode(self.preferences.get('api_transport', 'proxy'))
         self.preferences["read_only"] = True
         self.write_guard = WriteGuard(
@@ -2521,6 +2525,14 @@ class MainWindow(QMainWindow):
     def _on_authorization_needed(self, identifier):
         if self._closing:
             return
+        if getattr(self.api,'identity_gate',None) is not None:
+            from .request_policy import credentials_revision
+            try:
+                current=self.api.cluster(identifier)
+                if not self.store.login_required(current) and not self.api._connection_admission.is_blocked(identifier,credentials_revision(current)):
+                    self._unauthorized_clusters.discard(identifier)
+                    return
+            except ValueError:return
         self._unauthorized_clusters.add(identifier)
         if not self._auth_busy:
             QTimer.singleShot(0, self._prompt_expired_login)
@@ -2539,9 +2551,14 @@ class MainWindow(QMainWindow):
             unresolved = []
             for cluster in clusters:
                 try:
-                    self.api.authorization.renew(cluster["id"], cluster["encryptedKubeconfig"])
-                except Exception:
+                    gate=getattr(self.api,'identity_gate',None)
+                    if gate is not None:gate.ensure(self.api,cluster['id'])
+                    else:self.api.authorization.renew(cluster["id"], cluster["encryptedKubeconfig"])
+                except AuthorizationRequired:
                     unresolved.append(cluster["id"])
+                except Exception as exc:
+                    from .app_logging import log_problem
+                    log_problem(cluster['name']+' · whoami',str(exc))
             return unresolved
         def done(unresolved):
             if not polling_allowed(self):

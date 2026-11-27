@@ -289,10 +289,11 @@ class UITests(unittest.TestCase):
         QTest.qWait(30)
         cluster = self.store.put_cluster("Expired", "https://example.test:6443", "alice", CONFIG,
                                          password="saved-fixture-password", remember_password=True)
-        with patch("quaber.authorization.locate_kubectl", return_value=self.client), patch("quaber.authorization.login", return_value=CONFIG) as login, patch("quaber.ui.LoginGroupsDialog") as form, patch.object(window, "refresh"):
+        with patch("quaber.authorization.locate_kubectl", return_value=self.client), patch("quaber.authorization.login", return_value=CONFIG) as login, patch("quaber.ui.LoginGroupsDialog") as form, patch.object(window, "refresh"), patch.object(window.api,'request',return_value={'status':{'userInfo':{'username':'alice'}}}) as whoami:
             window._prompt_expired_login()
             self.wait_for(lambda: not window._auth_busy)
             login.assert_called_once()
+            self.assertEqual(whoami.call_args.args[1],'/apis/authentication.k8s.io/v1/selfsubjectreviews')
             form.assert_not_called()
         self.assertNotEqual(self.store.clusters()[0]["encryptedKubeconfig"], cluster["encryptedKubeconfig"])
         window.close()

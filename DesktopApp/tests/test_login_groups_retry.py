@@ -151,7 +151,8 @@ class LoginRetryTests(ShellFixture, unittest.TestCase):
     def test_cancel_preserves_success_in_mainwindow_authorization_tracking(self):
         records = self.connections()
         self.window._unauthorized_clusters.update(c['id'] for c in records)
-        self.api.authorization.renew.side_effect = RuntimeError('manual needed')
+        from quaber.authorization import AuthorizationRequired
+        self.api.authorization.renew.side_effect = AuthorizationRequired('manual needed')
         def inspect(dialog):
             dialog.passwords[0].setText('good')
             dialog.passwords[1].setText('bad')

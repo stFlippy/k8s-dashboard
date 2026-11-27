@@ -51,7 +51,7 @@ class NetworkErrorsTests(unittest.TestCase):
         api.request_policy.jitter = lambda a, b: 1.
         api.opener.route = lambda req: (503, {}, {'message': 'synthetic transient'})
         with ThreadPoolExecutor(max_workers=3) as pool:
-            for failures, delay in enumerate((5., 10., 20.), 1):
+            for failures, delay in enumerate((0., 10., 20.), 1):
                 before = clock()
                 with self.assertRaises(RuntimeError): pool.submit(api.request, 'c0', '/api/v1/pods').result()
                 self.assertEqual(api.request_policy.clusters['c0']['failures'], failures)
@@ -77,5 +77,8 @@ class NetworkErrorsTests(unittest.TestCase):
                 release.set()
             first.result(timeout=2)
             second.result(timeout=2)
+            api.request_policy.wait=clock.advance
+            clock.advance(1)
+            pool.submit(api.request,'c0','/api/v1/pods').result(timeout=2)
         self.assertEqual(api.request_policy.clusters['c0']['failures'], 0)
         self.assertEqual(api.request_policy.inflight, 0)

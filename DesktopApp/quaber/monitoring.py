@@ -237,6 +237,8 @@ class MonitoringController(QObject):
     def soft(self, reason, stopped):
         if self.policy.soft(reason, stopped): self.changed.emit()
     def sleep(self, reason):
+        gate=getattr(getattr(self.window,'api',None),'identity_gate',None)
+        if gate is not None:gate.invalidate()
         if self.policy.sleep(reason): self.changed.emit()
     def set_idle_minutes(self, value):
         if self.policy.set_idle_minutes(value): self.changed.emit()
@@ -415,6 +417,8 @@ class MonitoringController(QObject):
         old, self._last_state = self._last_state, state
         stopped = state not in ('ACTIVE', 'RECONNECTING')
         if stopped:
+            gate=getattr(getattr(self.window,'api',None),'identity_gate',None)
+            if gate is not None:gate.invalidate()
             self.window.set_read_only(True)
             self.window._matrix_generation += 1
             self.window.loading_matrix = False
